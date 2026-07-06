@@ -3,7 +3,7 @@ manifest = {
     "slug": "counter",
     "version": "1.0.0",
     "description": "Módulo contador de exemplo",
-    "is_default": True,
+    "is_default": False,
     "dependencies": [],
     "menus": [
         {

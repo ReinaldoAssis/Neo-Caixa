@@ -22,7 +22,7 @@ def main():
     api_thread.start()
 
     window = webview.create_window(
-        title="Helena",
+        title="Neo Caixa",
         url=f"http://{settings.HOST}:{settings.PORT}",
         width=settings.WINDOW_WIDTH,
         height=settings.WINDOW_HEIGHT,

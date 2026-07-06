@@ -3,7 +3,7 @@ from pathlib import Path
 import os
 
 class Settings(BaseSettings):
-    APP_NAME: str = "Helena"
+    APP_NAME: str = "Neo Caixa"
     VERSION: str = "0.1.0"
     DEBUG: bool = True
 
@@ -18,13 +18,13 @@ class Settings(BaseSettings):
     MODULES_DIR: Path = BASE_DIR / "modules"
 
     DB_DRIVER: str = "tinydb"
-    DB_PATH: Path = DATA_DIR / "helena.json"
+    DB_PATH: Path = DATA_DIR / "neocaixa.json"
 
     LOG_LEVEL: str = "INFO"
     LOG_DIR: Path = DATA_DIR / "logs"
 
     class Config:
         env_file = ".env"
-        env_prefix = "HELENA_"
+        env_prefix = "NEO_CAIXA_"
 
 settings = Settings()

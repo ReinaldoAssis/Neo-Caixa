@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { initRouter, navigate, currentRoute } from "./lib/router.svelte.ts";
   import Counter from "./modules/counter/Counter.svelte";
+  import Conciliador from "./modules/conciliador/Conciliador.svelte";
 
   let modules: Record<string, any> = $state({});
   let defaultModule = $state<string | null>(null);
@@ -59,9 +60,9 @@
       <div
         class="flex h-7 w-7 items-center justify-center rounded-lg bg-primary text-xs font-bold text-primary-foreground"
       >
-        H
+        N
       </div>
-      <span class="text-sm font-semibold">Helena</span>
+      <span class="text-sm font-semibold">Neo Caixa</span>
     </div>
     <nav class="flex-1 overflow-auto p-2">
       {#each Object.entries(modules) as [slug, manifest]}
@@ -113,6 +114,8 @@
         <div class="flex h-full items-center justify-center">
           <p class="text-muted-foreground">Carregando...</p>
         </div>
+      {:else if currentRoute.path === "/conciliador"}
+        <Conciliador />
       {:else if currentRoute.path === "/counter"}
         <Counter />
       {:else if currentRoute.path === "/"}
@@ -121,9 +124,9 @@
             <div
               class="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary text-2xl font-bold text-primary-foreground"
             >
-              H
+              N
             </div>
-            <h1 class="text-3xl font-semibold tracking-tight">Helena</h1>
+            <h1 class="text-3xl font-semibold tracking-tight">Neo Caixa</h1>
             <p class="text-muted-foreground">
               Selecione um m\u00f3dulo no menu lateral
             </p>

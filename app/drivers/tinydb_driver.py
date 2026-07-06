@@ -13,19 +13,36 @@ class TinyDBDriver(AbstractDatabaseDriver):
         doc_id = self._table(table).insert(data)
         return str(doc_id)
 
+    def _resolve_doc_ids(self, table: str, doc_id: str) -> list[int]:
+        try:
+            return [int(doc_id)]
+        except ValueError:
+            Q = Query()
+            results = self._table(table).search(Q.id == doc_id)
+            return [r.doc_id for r in results]
+
+    def get(self, table: str, doc_id: str) -> Optional[Dict[str, Any]]:
+        doc_ids = self._resolve_doc_ids(table, doc_id)
+        assert len(doc_ids) <= 1
+        if not doc_ids:
+            return None
+        return self._table(table).get(doc_id=doc_ids[0])
+
     def update(self, table: str, doc_id: str, data: Dict[str, Any]) -> bool:
         tbl = self._table(table)
-        Q = Query()
-        ids = tbl.update(data, doc_ids=[int(doc_id)])
+        doc_ids = self._resolve_doc_ids(table, doc_id)
+        if not doc_ids:
+            return False
+        ids = tbl.update(data, doc_ids=doc_ids)
         return len(ids) > 0
 
     def delete(self, table: str, doc_id: str) -> bool:
         tbl = self._table(table)
-        ids = tbl.remove(doc_ids=[int(doc_id)])
+        doc_ids = self._resolve_doc_ids(table, doc_id)
+        if not doc_ids:
+            return False
+        ids = tbl.remove(doc_ids=doc_ids)
         return len(ids) > 0
-
-    def get(self, table: str, doc_id: str) -> Optional[Dict[str, Any]]:
-        return self._table(table).get(doc_id=int(doc_id))
 
     def search(self, table: str, query: Dict[str, Any]) -> List[Dict[str, Any]]:
         Q = Query()
