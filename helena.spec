@@ -19,6 +19,7 @@ hiddenimports = [
     'uvicorn.lifespan.on',
     'reportlab.graphics.barcode',
     'xlrd',
+    'openpyxl',
 ]
 hiddenimports += collect_submodules('app.modules')
 

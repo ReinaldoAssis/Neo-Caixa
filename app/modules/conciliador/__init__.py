@@ -72,6 +72,7 @@ def _normalize_posto(data: dict) -> dict:
     data.setdefault("despesas", 0.0)
     data.setdefault("contagens_dinheiro", [])
     data.setdefault("lancamentos_avulsos", [])
+    data.setdefault("premmia_lancamentos", [])
     data.setdefault("observacoes", "")
     data.setdefault("criado_em", now)
     data["atualizado_em"] = now
@@ -205,6 +206,18 @@ async def restaurar(conciliacao_id: str):
     doc = _get_or_404(conciliacao_id)
     if doc.get("status") != "arquivado":
         raise HTTPException(status_code=400, detail="Apenas conciliacoes arquivadas podem ser restauradas")
+    existing_id = str(doc.get("doc_id", doc.get("id", "")))
+    doc["status"] = "rascunho"
+    doc["atualizado_em"] = _now()
+    app_context.database.update(TABLE, existing_id, doc)
+    return {"id": existing_id, "status": "rascunho"}
+
+
+@router.post("/conciliacoes/{conciliacao_id}/reabrir")
+async def reabrir(conciliacao_id: str):
+    doc = _get_or_404(conciliacao_id)
+    if doc.get("status") == "arquivado":
+        raise HTTPException(status_code=400, detail="Restaure a conciliacao arquivada antes de reabrir")
     existing_id = str(doc.get("doc_id", doc.get("id", "")))
     doc["status"] = "rascunho"
     doc["atualizado_em"] = _now()

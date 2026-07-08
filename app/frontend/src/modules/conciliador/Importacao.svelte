@@ -80,6 +80,7 @@
   let statusPagbank = $state("");
   let statusPremmia = $state("");
   let statusRestPagbank = $state("");
+  let premmiaLancamentos = $state<any[]>([]);
 
   let savedId = $state<string | null>(null);
 
@@ -170,6 +171,7 @@
       contagensDinheiro = doc.contagens_dinheiro || [];
       lancamentosAvulsos = doc.lancamentos_avulsos || [];
       observacoes = doc.observacoes || "";
+      premmiaLancamentos = doc.premmia_lancamentos || [];
 
       if (tipo === "posto") {
         fitcardTotal = doc.fitcard_total ? String(doc.fitcard_total).replace(".", ",") : "";
@@ -289,6 +291,7 @@
     try {
       const result = await uploadFile("/parser/premmia", file);
       statusPremmia = `Formato ${result.formato}. ${result.transacoes_processadas} transacoes`;
+      premmiaLancamentos = result.lancamentos || [];
       for (const key of postoCategories) {
         if (result.categorias?.[key]?.site) {
           categorias[key].site = (categorias[key].site || 0) + result.categorias[key].site;
@@ -478,6 +481,7 @@
       base.sangria = sangria;
       base.notas_a_prazo = notasPrazo;
       base.despesas = despesas;
+      base.premmia_lancamentos = premmiaLancamentos;
     } else {
       base.turno = turno === "T1" ? 1 : turno === "T2" ? 2 : null;
     }
@@ -509,11 +513,16 @@
       <button
         onclick={async () => {
           if (savedId) {
-            const res = await fetch(`/api/conciliador/conciliacoes/${savedId}/restaurar`, { method: "POST" });
-            if (res.ok) { status = "rascunho"; }
+            const res = await fetch(`/api/conciliador/conciliacoes/${savedId}/reabrir`, { method: "POST" });
+            if (res.ok) {
+              status = "rascunho";
+            } else {
+              const err = await res.json().catch(() => ({}));
+              errorMessage = err.detail || "Nao foi possivel reabrir o caixa.";
+            }
           }
         }}
-        class="ml-auto inline-flex h-8 items-center rounded-md bg-primary px-3 text-sm text-primary-foreground"
+        class="ml-auto inline-flex h-8 items-center bg-primary px-3 text-sm text-primary-foreground hover:bg-primary-hover"
       >
         Reabrir para edicao
       </button>
@@ -657,21 +666,64 @@
 
       <!-- Posto: Premmia -->
       <div class="mb-4 rounded-lg border p-4">
-        <h3 class="mb-3 text-sm font-semibold">E - Relatorio Premmia (XLS)</h3>
+        <h3 class="mb-3 text-sm font-semibold">E - Relatorio Premmia (XLS/XLSX)</h3>
         <div class="flex items-center gap-3">
           <span class="flex-1 text-sm text-muted-foreground">{statusPremmia || "Nenhum arquivo importado"}</span>
-          <input type="file" accept=".xls,.XLS,.csv" onchange={handlePremmiaUpload} disabled={readonly} class="hidden" id="premmia-file" />
-          <label for="premmia-file" class="inline-flex h-8 cursor-pointer items-center rounded-md border px-3 text-sm hover:bg-accent">
+          <input type="file" accept=".xls,.XLS,.xlsx,.XLSX,.csv" onchange={handlePremmiaUpload} disabled={readonly} class="hidden" id="premmia-file" />
+          <label for="premmia-file" class="inline-flex h-8 cursor-pointer items-center border px-3 text-sm hover:bg-accent">
             Selecionar Arquivo
           </label>
           <button
             disabled={readonly}
-            onclick={() => { statusPremmia = "Nenhum arquivo importado"; for (const k of postoCategories) categorias[k].site = 0; }}
-            class="inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-accent"
+            onclick={() => { statusPremmia = "Nenhum arquivo importado"; premmiaLancamentos = []; for (const k of postoCategories) categorias[k].site = 0; }}
+            class="inline-flex h-8 items-center border px-3 text-sm hover:bg-accent"
           >
             Remover
           </button>
         </div>
+
+        {#if premmiaLancamentos.length > 0}
+          <div class="mt-3 max-h-72 overflow-auto border">
+            <table class="w-full text-xs">
+              <thead class="sticky top-0 bg-muted">
+                <tr class="text-left">
+                  <th class="px-2 py-1.5">Data/Hora</th>
+                  <th class="px-2 py-1.5">Nome</th>
+                  <th class="px-2 py-1.5">CPF</th>
+                  <th class="px-2 py-1.5">Forma</th>
+                  <th class="px-2 py-1.5">Categoria</th>
+                  <th class="px-2 py-1.5 text-right">Valor</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each premmiaLancamentos as lanc}
+                  <tr class="border-t" class:text-muted-foreground={!lanc.aceito}>
+                    <td class="px-2 py-1">{lanc.data_hora}</td>
+                    <td class="px-2 py-1">{lanc.nome}</td>
+                    <td class="px-2 py-1">{lanc.cpf}</td>
+                    <td class="px-2 py-1">{lanc.forma}</td>
+                    <td class="px-2 py-1">
+                      {#if lanc.aceito}
+                        <span class="text-primary">{postoLabels[lanc.categoria] || lanc.categoria}</span>
+                      {:else}
+                        <span class="text-red-500">ignorado ({lanc.status})</span>
+                      {/if}
+                    </td>
+                    <td class="px-2 py-1 text-right tabular-nums">{formatMoney(lanc.valor)}</td>
+                  </tr>
+                {/each}
+              </tbody>
+              <tfoot class="sticky bottom-0 bg-muted font-semibold">
+                <tr class="border-t">
+                  <td class="px-2 py-1.5" colspan="5">Total ({premmiaLancamentos.length} lancamentos)</td>
+                  <td class="px-2 py-1.5 text-right tabular-nums">
+                    {formatMoney(premmiaLancamentos.reduce((s, l) => s + (l.aceito ? l.valor : 0), 0))}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        {/if}
       </div>
     {:else}
       <!-- Restaurante: PagBank CSV -->
