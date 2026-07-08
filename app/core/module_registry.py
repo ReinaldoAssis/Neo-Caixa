@@ -14,10 +14,12 @@ class ModuleRegistry:
         self._default_module: Optional[str] = None
 
     def discover(self):
-        modules_path = Path(__file__).parent.parent / "modules"
-        if not modules_path.exists():
+        try:
+            import app.modules as modules_pkg
+        except Exception as e:
+            logger.error(f"Cannot import modules package: {e}")
             return
-        for finder, name, ispkg in pkgutil.iter_modules([str(modules_path)]):
+        for finder, name, ispkg in pkgutil.iter_modules(modules_pkg.__path__):
             if ispkg and not name.startswith("_"):
                 self._load_module(name)
 

@@ -28,11 +28,15 @@ build: build-frontend build-bin
 
 build-frontend:
 	@echo "[helena] Building frontend..."
-	cd app/frontend && npm run build
+	cd app/frontend && npm install && npm run build
 
 build-bin:
 	@echo "[helena] Building executable with PyInstaller..."
 	pyinstaller helena.spec --clean --noconfirm
+
+build-mac:
+	@echo "[helena] Building macOS bundle..."
+	./scripts/build-mac.sh
 
 clean:
 	rm -rf build/ dist/ __pycache__/ app/frontend/dist/ app/**/__pycache__/

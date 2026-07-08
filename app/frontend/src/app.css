@@ -2,22 +2,108 @@
 
 @theme {
   --color-background: #ffffff;
-  --color-foreground: #0a0a0a;
-  --color-muted: #f5f5f5;
-  --color-muted-foreground: #737373;
-  --color-border: #e5e5e5;
-  --color-primary: #18181b;
-  --color-primary-foreground: #fafafa;
-  --color-accent: #f4f4f5;
-  --color-accent-foreground: #18181b;
-  --color-ring: #18181b;
-  --radius: 0.5rem;
+  --color-foreground: #0f172a;
+  --color-muted: #f1f5f9;
+  --color-muted-foreground: #64748b;
+  --color-border: #e2e8f0;
+  --color-primary: #2563eb;
+  --color-primary-foreground: #ffffff;
+  --color-primary-hover: #1d4ed8;
+  --color-primary-active: #1e40af;
+  --color-accent: #eff6ff;
+  --color-accent-foreground: #1e40af;
+  --color-ring: #2563eb;
+  --color-success: #16a34a;
+  --color-danger: #dc2626;
+  --radius: 0px;
+  --radius-xs: 0px;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
 }
 
 * {
   border-color: var(--color-border);
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   font-family: "Inter", system-ui, -apple-system, sans-serif;
+  color: var(--color-foreground);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease,
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.06s ease;
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px var(--color-ring);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+input,
+select,
+textarea {
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 25%, transparent);
+}
+
+@keyframes flash-ok {
+  0% {
+    background-color: color-mix(in srgb, var(--color-success) 22%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.flash-ok {
+  animation: flash-ok 0.6s ease;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.toast-in {
+  animation: toast-in 0.18s ease;
 }

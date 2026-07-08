@@ -2,8 +2,16 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
+import sys
 
 from app.core import app_context
+
+
+def _frontend_dist() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / "frontend" / "dist"
+    return Path(__file__).parent / "frontend" / "dist"
+
 
 
 def create_app() -> FastAPI:
@@ -45,7 +53,7 @@ def create_app() -> FastAPI:
             "default_module": app_context.module_registry.default_module,
         }
 
-    frontend_dist = Path(__file__).parent / "frontend" / "dist"
+    frontend_dist = _frontend_dist()
     if frontend_dist.exists():
         app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
 

@@ -58,7 +58,7 @@
   >
     <div class="flex h-14 items-center gap-2 border-b px-4">
       <div
-        class="flex h-7 w-7 items-center justify-center rounded-lg bg-primary text-xs font-bold text-primary-foreground"
+        class="flex h-7 w-7 items-center justify-center bg-primary text-xs font-bold text-primary-foreground"
       >
         N
       </div>
@@ -66,15 +66,20 @@
     </div>
     <nav class="flex-1 overflow-auto p-2">
       {#each Object.entries(modules) as [slug, manifest]}
+        {@const active = currentRoute.path === moduleRoute(manifest)}
         <button
           onclick={() => navigate(moduleRoute(manifest))}
-          class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent"
-          class:bg-accent={currentRoute.path === moduleRoute(manifest)}
+          class="flex w-full items-center gap-2 border-l-2 px-3 py-2 text-sm transition-colors hover:bg-accent"
+          class:border-primary={active}
+          class:bg-accent={active}
+          class:text-primary={active}
+          class:font-semibold={active}
+          class:border-transparent={!active}
         >
           <span>{manifest.name}</span>
           {#if slug === defaultModule}
             <span
-              class="ml-auto rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+              class="ml-auto bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
             >
               inicial
             </span>
@@ -88,7 +93,7 @@
     <header class="flex h-14 items-center gap-3 border-b px-4">
       <button
         onclick={() => (sidebarOpen = !sidebarOpen)}
-        class="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+        class="inline-flex h-8 w-8 items-center justify-center text-muted-foreground hover:bg-accent hover:text-accent-foreground"
         aria-label="Toggle sidebar"
       >
         <svg
@@ -122,7 +127,7 @@
         <div class="flex h-full items-center justify-center">
           <div class="flex flex-col items-center gap-4">
             <div
-              class="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary text-2xl font-bold text-primary-foreground"
+              class="flex h-16 w-16 items-center justify-center bg-primary text-2xl font-bold text-primary-foreground"
             >
               N
             </div>
