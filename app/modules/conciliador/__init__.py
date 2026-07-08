@@ -26,10 +26,21 @@ from app.modules.conciliador.services import (
     consolidate_contagens,
     validate_contagens,
 )
+from app.modules.conciliador.config_posto import (
+    load_config,
+    save_config,
+    default_config,
+    config_category_keys,
+    config_labels,
+)
 from app.modules.conciliador.export import generate_conciliation_pdf_bytes
 
 router = APIRouter(prefix="/api/conciliador", tags=["Conciliador"])
 TABLE = "conciliacoes"
+
+
+def _posto_config() -> dict:
+    return load_config(app_context.database)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────
@@ -47,11 +58,14 @@ def _get_or_404(conciliacao_id: str) -> dict:
 
 def _normalize_posto(data: dict) -> dict:
     now = _now()
+    config = _posto_config()
+    keys = config_category_keys(config)
+    labels = config_labels(config)
     data.setdefault("id", str(uuid4()))
     data.setdefault("status", "rascunho")
     data.setdefault("tipo", "posto")
-    data.setdefault("categorias", empty_categories_posto())
-    data["categorias"] = normalize_categories_posto(data["categorias"])
+    data.setdefault("categorias", empty_categories_posto(keys))
+    data["categorias"] = normalize_categories_posto(data["categorias"], keys)
     data.setdefault("fitcard_total", 0.0)
     data.setdefault("sangria", 0.0)
     data.setdefault("notas_a_prazo", 0.0)
@@ -62,7 +76,7 @@ def _normalize_posto(data: dict) -> dict:
     data.setdefault("criado_em", now)
     data["atualizado_em"] = now
     avulsos = data.get("lancamentos_avulsos") or []
-    total_sistema, total_site, diferenca = totals_posto(data["categorias"], avulsos)
+    total_sistema, total_site, diferenca = totals_posto(data["categorias"], avulsos, keys, labels)
     data["total_sistema"] = total_sistema
     data["total_site"] = total_site
     data["diferenca_total"] = diferenca
@@ -212,7 +226,7 @@ async def delete_conciliacao(conciliacao_id: str):
 async def parser_caixa(file: UploadFile = File(...)):
     content = await file.read()
     try:
-        result = parse_caixa_csv(content, file.filename or "caixa.csv")
+        result = parse_caixa_csv(content, file.filename or "caixa.csv", _posto_config())
         return result
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -222,7 +236,7 @@ async def parser_caixa(file: UploadFile = File(...)):
 async def parser_pagbank(file: UploadFile = File(...)):
     content = await file.read()
     try:
-        result = parse_pagbank_csv(content, file.filename or "pagbank.csv")
+        result = parse_pagbank_csv(content, file.filename or "pagbank.csv", _posto_config())
         return result
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -232,7 +246,7 @@ async def parser_pagbank(file: UploadFile = File(...)):
 async def parser_premmia(file: UploadFile = File(...)):
     content = await file.read()
     try:
-        result = parse_premmia_file(content, file.filename or "premmia.xls")
+        result = parse_premmia_file(content, file.filename or "premmia.xls", _posto_config())
         return result
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -275,7 +289,13 @@ async def build_resultado(conciliacao_id: str):
         )
     else:
         from app.modules.conciliador.services import build_conciliation_rows_posto
-        rows = build_conciliation_rows_posto(doc.get("categorias", {}), avulsos)
+        config = _posto_config()
+        rows = build_conciliation_rows_posto(
+            doc.get("categorias", {}),
+            avulsos,
+            config_category_keys(config),
+            config_labels(config),
+        )
 
     return {
         "rows": rows,
@@ -296,7 +316,8 @@ async def build_resultado(conciliacao_id: str):
 async def export_pdf(conciliacao_id: str):
     doc = _get_or_404(conciliacao_id)
     try:
-        pdf_bytes = generate_conciliation_pdf_bytes(doc)
+        cfg = _posto_config() if doc.get("tipo", "posto") == "posto" else None
+        pdf_bytes = generate_conciliation_pdf_bytes(doc, cfg)
         date_str = doc.get("data", "export")
         tipo = doc.get("tipo", "")
         tipo_str = f"_{tipo}" if tipo else ""
@@ -308,6 +329,43 @@ async def export_pdf(conciliacao_id: str):
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ─── Configuração de grupos (Posto) ──────────────────────────────
+
+@router.get("/config/posto")
+async def get_config_posto():
+    config = _posto_config()
+    return {
+        "grupos": config["grupos"],
+        "categorias": config_category_keys(config),
+        "labels": config_labels(config),
+    }
+
+
+@router.put("/config/posto")
+async def update_config_posto(data: dict):
+    try:
+        saved = save_config(app_context.database, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    config = {"grupos": saved["grupos"]}
+    return {
+        "grupos": config["grupos"],
+        "categorias": config_category_keys(config),
+        "labels": config_labels(config),
+    }
+
+
+@router.post("/config/posto/reset")
+async def reset_config_posto():
+    saved = save_config(app_context.database, default_config())
+    config = {"grupos": saved["grupos"]}
+    return {
+        "grupos": config["grupos"],
+        "categorias": config_category_keys(config),
+        "labels": config_labels(config),
+    }
 
 
 # ─── Validação de contagens ──────────────────────────────────────

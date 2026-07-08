@@ -13,19 +13,34 @@
 
   let { tipo, conciliacaoId, onVoltar, onResultado, onSalvo }: Props = $props();
 
-  const postoCategories = [
-    "PREMMIA_CARTAO", "PREMMIA_PIX", "PREMMIA_CUPOM", "PREMMIA_VALE",
-    "FITCARD", "PAG_PIX", "ELO_CREDITO", "ELO_DEBITO",
+  let postoCategories = $state<string[]>([
+    "PREMMIA_CARTAO", "PREMMIA_PIX", "PREMMIA_VALE", "PREMMIA_CUPOM",
+    "FITCARD", "PAG_PIX", "AMEX", "ELO_CREDITO", "ELO_DEBITO",
     "MASTERCARD_CREDITO", "MASTERCARD_DEBITO", "VISA_CREDITO", "VISA_DEBITO",
-  ];
-  const postoLabels: Record<string, string> = {
+  ]);
+  let postoLabels = $state<Record<string, string>>({
     PREMMIA_CARTAO: "PREMMIA CARTAO", PREMMIA_PIX: "PREMMIA PIX",
-    PREMMIA_CUPOM: "PREMMIA CUPOM", PREMMIA_VALE: "PREMMIA VALE",
-    FITCARD: "FITCARD", PAG_PIX: "PAG PIX",
+    PREMMIA_VALE: "PREMMIA VALE", PREMMIA_CUPOM: "PREMMIA CUPOM",
+    FITCARD: "FITCARD", PAG_PIX: "PAG PIX", AMEX: "AMERICAN EXP",
     ELO_CREDITO: "ELO CREDITO", ELO_DEBITO: "ELO DEBITO",
     MASTERCARD_CREDITO: "MASTERCARD CREDITO", MASTERCARD_DEBITO: "MASTERCARD DEBITO",
     VISA_CREDITO: "VISA CREDITO", VISA_DEBITO: "VISA DEBITO",
-  };
+  });
+
+  async function loadPostoConfig() {
+    try {
+      const res = await fetch("/api/conciliador/config/posto");
+      if (res.ok) {
+        const cfg = await res.json();
+        if (Array.isArray(cfg.categorias) && cfg.categorias.length) {
+          postoCategories = cfg.categorias;
+          postoLabels = cfg.labels || {};
+        }
+      }
+    } catch {
+      // keep defaults
+    }
+  }
 
   const restCategories = [
     "PIX", "ELO_DEBITO", "MAESTRO", "VC_ELECTRON", "AMEX",
@@ -117,7 +132,10 @@
     }
   });
 
-  onMount(() => {
+  onMount(async () => {
+    if (tipo === "posto") {
+      await loadPostoConfig();
+    }
     initCategories();
     if (conciliacaoId) {
       loadConciliacao(conciliacaoId);

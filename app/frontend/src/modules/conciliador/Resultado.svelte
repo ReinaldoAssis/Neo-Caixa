@@ -17,15 +17,30 @@
   let loading = $state(true);
   let caixaId = $state("");
 
-  const postoLabels: Record<string, string> = {
+  let postoLabels = $state<Record<string, string>>({
     PREMMIA_CARTAO: "PREMMIA CARTAO", PREMMIA_PIX: "PREMMIA PIX",
-    PREMMIA_CUPOM: "PREMMIA CUPOM", PREMMIA_VALE: "PREMMIA VALE",
-    FITCARD: "FITCARD", PAG_PIX: "PAG PIX",
+    PREMMIA_VALE: "PREMMIA VALE", PREMMIA_CUPOM: "PREMMIA CUPOM",
+    FITCARD: "FITCARD", PAG_PIX: "PAG PIX", AMEX: "AMERICAN EXP",
     ELO_CREDITO: "ELO CREDITO", ELO_DEBITO: "ELO DEBITO",
     MASTERCARD_CREDITO: "MASTERCARD CREDITO", MASTERCARD_DEBITO: "MASTERCARD DEBITO",
     VISA_CREDITO: "VISA CREDITO", VISA_DEBITO: "VISA DEBITO",
-  };
-  const postoCategories = Object.keys(postoLabels);
+  });
+  let postoCategories = $state<string[]>(Object.keys(postoLabels));
+
+  async function loadPostoConfig() {
+    try {
+      const res = await fetch("/api/conciliador/config/posto");
+      if (res.ok) {
+        const cfg = await res.json();
+        if (Array.isArray(cfg.categorias) && cfg.categorias.length) {
+          postoCategories = cfg.categorias;
+          postoLabels = cfg.labels || {};
+        }
+      }
+    } catch {
+      // keep defaults
+    }
+  }
 
   const restLabels: Record<string, string> = {
     PIX: "PIX", ELO_DEBITO: "ELO DEBITO", MAESTRO: "MAESTRO",
@@ -40,8 +55,11 @@
   let avulsoDesc = $state("");
   let avulsoValor = $state("");
 
-  onMount(() => {
+  onMount(async () => {
     lancamentosAvulsos = caixa.lancamentos_avulsos || [];
+    if (tipo === "posto") {
+      await loadPostoConfig();
+    }
     if (caixa.id || caixa._id) {
       caixaId = String(caixa.id || caixa._id);
       loadResultado();

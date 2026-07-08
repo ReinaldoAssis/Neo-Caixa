@@ -25,7 +25,7 @@ def _date_br(iso_date: str) -> str:
         return iso_date
 
 
-def generate_conciliation_pdf_bytes(caixa: dict) -> bytes:
+def generate_conciliation_pdf_bytes(caixa: dict, posto_config: dict | None = None) -> bytes:
     try:
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4
@@ -64,8 +64,18 @@ def generate_conciliation_pdf_bytes(caixa: dict) -> bytes:
         contagens = caixa.get("contagens_dinheiro") or []
 
         if tipo == "posto":
+            from app.modules.conciliador.config_posto import (
+                default_config,
+                config_category_keys,
+                config_labels,
+            )
+            cfg = posto_config or default_config()
+            posto_keys = config_category_keys(cfg)
+            posto_labels = config_labels(cfg)
             table_data = [["Categoria", "Sistema", "Site", "Diferenca", "Status"]]
-            for row in build_conciliation_rows_posto(caixa.get("categorias", {}), avulsos):
+            for row in build_conciliation_rows_posto(
+                caixa.get("categorias", {}), avulsos, posto_keys, posto_labels
+            ):
                 table_data.append([
                     row["label"],
                     format_money(row["sistema"]),
@@ -107,7 +117,11 @@ def generate_conciliation_pdf_bytes(caixa: dict) -> bytes:
                 Paragraph("Lancamentos Avulsos", styles["Heading2"]),
             ])
             avulso_data = [["Tipo", "Descricao", "Valor", "Categoria"]]
-            labels = CATEGORY_LABELS_POSTO if tipo == "posto" else CATEGORIAS_RESTAURANTE_LABELS
+            if tipo == "posto":
+                from app.modules.conciliador.config_posto import default_config, config_labels
+                labels = config_labels(posto_config or default_config())
+            else:
+                labels = CATEGORIAS_RESTAURANTE_LABELS
             for item in avulsos:
                 if item.get("categoria_vinculada"):
                     cat_label = labels.get(item["categoria_vinculada"], item["categoria_vinculada"])

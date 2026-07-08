@@ -49,10 +49,14 @@ def _apply_avulsos_posto(
 def build_conciliation_rows_posto(
     categorias: dict[str, dict[str, float]],
     avulsos: list[dict] | None = None,
+    keys: list[str] | None = None,
+    labels: dict[str, str] | None = None,
 ) -> list[dict]:
-    categorias = normalize_categories_posto(categorias)
+    keys = keys if keys is not None else CATEGORIES_POSTO
+    labels = labels if labels is not None else CATEGORY_LABELS_POSTO
+    categorias = normalize_categories_posto(categorias, keys)
     rows = []
-    for key in CATEGORIES_POSTO:
+    for key in keys:
         values = categorias.get(key, {})
         sistema = round(float(values.get("sistema", 0) or 0), 2)
         site = round(float(values.get("site", 0) or 0), 2)
@@ -60,7 +64,7 @@ def build_conciliation_rows_posto(
         diff = round(sistema - site, 2)
         rows.append({
             "key": key,
-            "label": CATEGORY_LABELS_POSTO[key],
+            "label": labels.get(key, key),
             "sistema": sistema,
             "site": site,
             "diferenca": diff,
@@ -88,8 +92,10 @@ def build_conciliation_rows_posto(
 def totals_posto(
     categorias: dict[str, dict[str, float]],
     avulsos: list[dict] | None = None,
+    keys: list[str] | None = None,
+    labels: dict[str, str] | None = None,
 ) -> tuple[float, float, float]:
-    rows = build_conciliation_rows_posto(categorias, avulsos)
+    rows = build_conciliation_rows_posto(categorias, avulsos, keys, labels)
     sistema = round(sum(float(row["sistema"]) for row in rows), 2)
     site = round(sum(float(row["site"]) for row in rows), 2)
     return sistema, site, round(sistema - site, 2)

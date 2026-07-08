@@ -2,11 +2,13 @@
   import Historico from "./Historico.svelte";
   import Importacao from "./Importacao.svelte";
   import Resultado from "./Resultado.svelte";
+  import ConfigPosto from "./ConfigPosto.svelte";
 
   type Tipo = "posto" | "restaurante";
   type View = "historico" | "importacao" | "resultado";
 
   let activeTipo = $state<Tipo>("posto");
+  let showConfig = $state(false);
 
   let postoView = $state<View>("historico");
   let postoId = $state<string | null>(null);
@@ -76,7 +78,7 @@
   <div class="flex items-center border-b">
     <div class="flex">
       <button
-        onclick={() => (activeTipo = "posto")}
+        onclick={() => { activeTipo = "posto"; }}
         class="px-4 py-2.5 text-sm font-medium transition-colors"
         class:border-b-2={activeTipo === "posto"}
         class:border-primary={activeTipo === "posto"}
@@ -86,7 +88,7 @@
         Posto
       </button>
       <button
-        onclick={() => (activeTipo = "restaurante")}
+        onclick={() => { activeTipo = "restaurante"; showConfig = false; }}
         class="px-4 py-2.5 text-sm font-medium transition-colors"
         class:border-b-2={activeTipo === "restaurante"}
         class:border-primary={activeTipo === "restaurante"}
@@ -97,23 +99,35 @@
       </button>
     </div>
     <div class="ml-auto flex gap-2 px-4">
+      {#if activeTipo === "posto"}
+        <button
+          onclick={() => (showConfig = !showConfig)}
+          class="inline-flex h-8 items-center border px-3 text-sm hover:bg-accent"
+          class:bg-accent={showConfig}
+          class:text-primary={showConfig}
+        >
+          {showConfig ? "Voltar" : "Configuracoes"}
+        </button>
+      {/if}
       <button
         onclick={novoPosto}
-        class="inline-flex h-8 items-center rounded-md bg-primary px-3 text-sm text-primary-foreground hover:bg-primary/90"
+        class="inline-flex h-8 items-center bg-primary px-3 text-sm text-primary-foreground hover:bg-primary-hover"
       >
         + Novo Posto
       </button>
       <button
         onclick={novoRestaurante}
-        class="inline-flex h-8 items-center rounded-md bg-primary px-3 text-sm text-primary-foreground hover:bg-primary/90"
+        class="inline-flex h-8 items-center bg-primary px-3 text-sm text-primary-foreground hover:bg-primary-hover"
       >
         + Novo Restaurante
       </button>
     </div>
   </div>
 
-  <!-- Posto content -->
-  {#if activeTipo === "posto"}
+  <!-- Config view (posto) -->
+  {#if activeTipo === "posto" && showConfig}
+    <ConfigPosto />
+  {:else if activeTipo === "posto"}
     {#if postoView === "historico"}
       <Historico
         tipo="posto"
