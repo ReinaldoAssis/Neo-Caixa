@@ -54,6 +54,15 @@
   let avulsoColuna = $state("sistema");
   let avulsoDesc = $state("");
   let avulsoValor = $state("");
+  let avulsoCat = $state("");
+  let avulsoNovaCat = $state("");
+
+  const catOptions = $derived(
+    tipo === "posto"
+      ? postoCategories.map((k) => postoLabels[k] || k).concat(["Nova categoria..."])
+      : restCategories.map((k) => restLabels[k]).concat(["Nova categoria..."])
+  );
+  const showNovaCat = $derived(avulsoCat === "Nova categoria...");
 
   onMount(async () => {
     lancamentosAvulsos = caixa.lancamentos_avulsos || [];
@@ -96,10 +105,19 @@
     if (tipo === "posto") {
       for (const key of postoCategories) {
         const v = cats[key] || { sistema: 0, site: 0 };
-        const sistema = v.sistema || 0;
-        const site = v.site || 0;
+        let sistema = v.sistema || 0;
+        let site = v.site || 0;
+        for (const av of avulsos) {
+          if (av.categoria_vinculada === key) {
+            const delta = av.tipo === "RECEITA" ? av.valor : -av.valor;
+            if (av.coluna === "site") site += delta;
+            else sistema += delta;
+          }
+        }
+        sistema = Math.round(sistema * 100) / 100;
+        site = Math.round(site * 100) / 100;
         const diff = sistema - site;
-        rows.push({ key, label: postoLabels[key], sistema, site, diferenca: Math.round(diff * 100) / 100, status: Math.abs(diff) < 0.005 ? "OK" : "DIVERGENTE" });
+        rows.push({ key, label: postoLabels[key] || key, sistema, site, diferenca: Math.round(diff * 100) / 100, status: Math.abs(diff) < 0.005 ? "OK" : "DIVERGENTE" });
       }
       for (const av of avulsos) {
         if (av.categoria_nova) {
@@ -119,8 +137,17 @@
       const dinheiroReal = geral?.total || 0;
       for (const key of restCategories) {
         const v = cats[key] || { sistema: 0, real: 0 };
-        const sistema = v.sistema || 0;
-        const real = key === "DINHEIRO" ? dinheiroReal : (v.real || 0);
+        let sistema = v.sistema || 0;
+        let real = key === "DINHEIRO" ? dinheiroReal : (v.real || 0);
+        for (const av of avulsos) {
+          if (av.categoria_vinculada === key) {
+            const delta = av.tipo === "RECEITA" ? av.valor : -av.valor;
+            if (av.coluna === "real") real += delta;
+            else sistema += delta;
+          }
+        }
+        sistema = Math.round(sistema * 100) / 100;
+        real = Math.round(real * 100) / 100;
         const diff = sistema - real;
         rows.push({ key, label: restLabels[key], sistema, real, diferenca: Math.round(diff * 100) / 100, status: Math.abs(diff) < 0.005 ? "OK" : "DIVERGENTE" });
       }
@@ -159,18 +186,44 @@
   function addAvulso() {
     const valor = parseMoney(avulsoValor);
     if (valor <= 0) return;
+
+    let categoria_vinculada: string | null = null;
+    let categoria_nova: string | null = null;
+
+    if (avulsoCat === "Nova categoria...") {
+      if (!avulsoNovaCat.trim()) return;
+      categoria_nova = avulsoNovaCat.toUpperCase();
+    } else if (avulsoCat) {
+      if (tipo === "posto") {
+        const entry = Object.entries(postoLabels).find(([, v]) => v === avulsoCat);
+        categoria_vinculada = entry ? entry[0] : avulsoCat;
+      } else {
+        const entry = Object.entries(restLabels).find(([, v]) => v === avulsoCat);
+        categoria_vinculada = entry ? entry[0] : avulsoCat;
+      }
+    }
+
     lancamentosAvulsos = [...lancamentosAvulsos, {
       id: crypto.randomUUID(),
       descricao: avulsoDesc,
       valor,
       tipo: avulsoTipo,
       coluna: avulsoColuna,
-      categoria_vinculada: null,
-      categoria_nova: null,
+      categoria_vinculada,
+      categoria_nova,
     }];
     avulsoDesc = "";
     avulsoValor = "";
+    avulsoNovaCat = "";
     buildFromPayload();
+  }
+
+  function getCatLabel(cat: any): string {
+    if (cat.categoria_vinculada) {
+      if (tipo === "posto") return postoLabels[cat.categoria_vinculada] || cat.categoria_vinculada;
+      return restLabels[cat.categoria_vinculada] || cat.categoria_vinculada;
+    }
+    return cat.categoria_nova || "(sem categoria)";
   }
 
   function removeAvulso(idx: number) {
@@ -347,9 +400,23 @@
             placeholder="Valor"
             class="w-28 rounded-md border bg-background px-2 py-1 text-sm"
           />
+          <Select bind:value={avulsoCat}>
+            <option value="">Selecionar categoria</option>
+            {#each catOptions as opt}
+              <option>{opt}</option>
+            {/each}
+          </Select>
+          {#if showNovaCat}
+            <input
+              type="text"
+              bind:value={avulsoNovaCat}
+              placeholder="Nome da nova categoria"
+              class="rounded-md border bg-background px-2 py-1 text-sm"
+            />
+          {/if}
           <button
             onclick={addAvulso}
-            class="inline-flex h-8 items-center rounded-md bg-primary px-3 text-sm text-primary-foreground hover:bg-primary/90"
+            class="inline-flex h-8 items-center bg-primary px-3 text-sm text-primary-foreground hover:bg-primary-hover"
           >
             Adicionar
           </button>
@@ -361,6 +428,7 @@
                 <th class="px-3 py-1.5 text-left">Tipo</th>
                 <th class="px-3 py-1.5 text-left">Coluna</th>
                 <th class="px-3 py-1.5 text-left">Descricao</th>
+                <th class="px-3 py-1.5 text-left">Categoria</th>
                 <th class="px-3 py-1.5 text-right">Valor</th>
                 <th class="px-3 py-1.5"></th>
               </tr>
@@ -371,6 +439,7 @@
                   <td class="px-3 py-1.5">{avulso.tipo}</td>
                   <td class="px-3 py-1.5">{avulso.coluna}</td>
                   <td class="px-3 py-1.5">{avulso.descricao}</td>
+                  <td class="px-3 py-1.5">{getCatLabel(avulso)}</td>
                   <td class="px-3 py-1.5 text-right">{formatMoney(avulso.valor)}</td>
                   <td class="px-3 py-1.5">
                     <button

@@ -164,10 +164,17 @@ def _parse_pagbank_csv(path: Path, config: dict) -> dict:
     }
 
 
-# ─── Posto: Premmia XLS ──────────────────────────────────────────
+# ─── Posto: Premmia XLS/XLSX ─────────────────────────────────────
+
+ZIP_MAGIC = b"PK\x03\x04"
+
 
 def detectar_formato_premmia(content: bytes) -> str:
-    return "xls" if content[:8] == OLE2_MAGIC else "csv"
+    if content[:8] == OLE2_MAGIC:
+        return "xls"
+    if content[:4] == ZIP_MAGIC:
+        return "xlsx"
+    return "csv"
 
 
 def _rows_from_xls(content: bytes) -> list[dict]:
@@ -192,25 +199,67 @@ def _rows_from_xls(content: bytes) -> list[dict]:
     elif "Conferencia" in book.sheet_names():
         sheet = book.sheet_by_name("Conferencia")
     else:
-        raise ValueError("Nao encontrei a planilha 'Conferencia' no arquivo Premmia.")
+        sheet = book.sheet_by_index(0)
 
+    grid = [
+        [sheet.cell_value(r, c) for c in range(sheet.ncols)]
+        for r in range(sheet.nrows)
+    ]
+    return _records_from_grid(grid)
+
+
+def _rows_from_xlsx(content: bytes) -> list[dict]:
+    try:
+        import openpyxl
+    except ImportError as exc:
+        raise RuntimeError("Instale openpyxl para processar arquivos Premmia .xlsx.") from exc
+
+    temp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    try:
+        temp.write(content)
+        temp.close()
+        book = openpyxl.load_workbook(temp.name, data_only=True, read_only=True)
+    finally:
+        try:
+            Path(temp.name).unlink()
+        except OSError:
+            pass
+
+    sheet = None
+    for name in ("Conferência", "Conferencia"):
+        if name in book.sheetnames:
+            sheet = book[name]
+            break
+    if sheet is None:
+        sheet = book[book.sheetnames[0]]
+
+    grid = [
+        ["" if v is None else v for v in row]
+        for row in sheet.iter_rows(values_only=True)
+    ]
+    return _records_from_grid(grid)
+
+
+def _records_from_grid(grid: list[list]) -> list[dict]:
     header_row = None
     headers: list[str] = []
-    for row_idx in range(sheet.nrows):
-        values = [str(sheet.cell_value(row_idx, col)).strip() for col in range(sheet.ncols)]
+    for idx, row in enumerate(grid):
+        values = [str(v).strip() for v in row]
         normalized = [normalize_text(v) for v in values]
         if "CPF" in normalized and "STATUS" in normalized:
-            header_row = row_idx
+            header_row = idx
             headers = values
             break
     if header_row is None:
         raise ValueError("Nao encontrei o cabecalho esperado no arquivo Premmia.")
 
     records = []
-    for row_idx in range(header_row + 1, sheet.nrows):
+    for row in grid[header_row + 1:]:
+        if not any(str(v).strip() for v in row):
+            continue
         record = {}
         for col_idx, header in enumerate(headers):
-            record[header] = sheet.cell_value(row_idx, col_idx)
+            record[header] = row[col_idx] if col_idx < len(row) else ""
         records.append(record)
     return records
 
@@ -229,27 +278,54 @@ def parse_premmia_file(file_content: bytes, filename: str, config: dict | None =
     keys = config_category_keys(config)
 
     formato = detectar_formato_premmia(file_content)
-    if formato != "xls":
-        raise ValueError("O relatorio Premmia deve ser um arquivo Excel .xls valido.")
-    records = _rows_from_xls(file_content)
+    if formato == "xls":
+        records = _rows_from_xls(file_content)
+    elif formato == "xlsx":
+        records = _rows_from_xlsx(file_content)
+    else:
+        raise ValueError("O relatorio Premmia deve ser um arquivo Excel .xls ou .xlsx valido.")
+
     categorias = empty_categories_posto(keys)
     processed = 0
     ignored = 0
     nao_reconhecidos: dict[str, int] = {}
+    lancamentos: list[dict] = []
 
     for record in records:
-        if normalize_text(_premmia_get(record, "Status")) != "PROCESSADA":
+        status = normalize_text(_premmia_get(record, "Status"))
+        forma_raw = str(_premmia_get(record, "Forma de Pagamento")).strip()
+        forma = normalize_text(forma_raw)
+        valor = parse_money(_premmia_get(record, "Valor líquido"))
+        nome = str(_premmia_get(record, "Nome")).strip()
+        cpf = str(_premmia_get(record, "CPF")).strip()
+        data_hora = str(
+            _premmia_get(record, "Data/Hora da transação")
+            or _premmia_get(record, "Data/Hora da transacao")
+        ).strip()
+
+        key = premmia_map.get(forma)
+        aceito = bool(key and key in categorias and status == "PROCESSADA")
+
+        lancamentos.append({
+            "cpf": cpf,
+            "nome": nome,
+            "forma": forma_raw,
+            "valor": valor,
+            "data_hora": data_hora,
+            "status": str(_premmia_get(record, "Status")).strip(),
+            "categoria": key if aceito else None,
+            "aceito": aceito,
+        })
+
+        if status != "PROCESSADA":
             ignored += 1
             continue
-        forma = normalize_text(_premmia_get(record, "Forma de Pagamento"))
-        key = premmia_map.get(forma)
-        if not key or key not in categorias:
+        if not aceito:
             ignored += 1
             if forma:
                 nao_reconhecidos[forma] = nao_reconhecidos.get(forma, 0) + 1
             continue
-        value = parse_money(_premmia_get(record, "Valor líquido"))
-        categorias[key]["site"] = round(categorias[key]["site"] + value, 2)
+        categorias[key]["site"] = round(categorias[key]["site"] + valor, 2)
         processed += 1
 
     return {
@@ -257,6 +333,7 @@ def parse_premmia_file(file_content: bytes, filename: str, config: dict | None =
         "categorias": categorias,
         "transacoes_processadas": processed,
         "transacoes_ignoradas": ignored,
+        "lancamentos": lancamentos,
         "nao_reconhecidos": [
             {"forma": k, "quantidade": v} for k, v in sorted(nao_reconhecidos.items())
         ],
