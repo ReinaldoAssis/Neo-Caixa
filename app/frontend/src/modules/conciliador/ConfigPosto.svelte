@@ -15,6 +15,9 @@
   let feedback = $state("");
   let feedbackType = $state<"ok" | "err">("ok");
 
+  let contagemTabBehavior = $state<"icone" | "icone_fixo">("icone");
+  let savingBehavior = $state(false);
+
   onMount(load);
 
   async function load() {
@@ -25,10 +28,35 @@
         const cfg = await res.json();
         grupos = (cfg.grupos || []).map(normalizeGrupo);
       }
+      const sres = await fetch("/api/conciliador/config/settings");
+      if (sres.ok) {
+        const s = await sres.json();
+        if (s.contagem_tab_behavior === "icone_fixo" || s.contagem_tab_behavior === "icone") {
+          contagemTabBehavior = s.contagem_tab_behavior;
+        }
+      }
     } catch {
       grupos = [];
     } finally {
       loading = false;
+    }
+  }
+
+  async function saveBehavior(value: "icone" | "icone_fixo") {
+    contagemTabBehavior = value;
+    savingBehavior = true;
+    try {
+      const res = await fetch("/api/conciliador/config/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contagem_tab_behavior: value }),
+      });
+      if (!res.ok) throw new Error("Erro ao salvar comportamento");
+      flash("Comportamento da aba de contagem atualizado.");
+    } catch (e: any) {
+      flash(e.message, "err");
+    } finally {
+      savingBehavior = false;
     }
   }
 
@@ -178,6 +206,44 @@
       </div>
     {:else}
       <div class="space-y-4">
+        <!-- Comportamento aba de contagem -->
+        <div class="border p-4">
+          <h2 class="text-sm font-semibold">Comportamento aba de contagem</h2>
+          <p class="mb-3 text-xs text-muted-foreground">
+            Define como criar novas abas de contagem de dinheiro
+          </p>
+          <div class="flex flex-wrap gap-2">
+            <button
+              onclick={() => saveBehavior("icone")}
+              disabled={savingBehavior}
+              class="inline-flex h-9 items-center border px-4 text-sm hover:bg-accent disabled:opacity-50"
+              class:border-primary={contagemTabBehavior === "icone"}
+              class:bg-accent={contagemTabBehavior === "icone"}
+              class:text-primary={contagemTabBehavior === "icone"}
+              class:font-semibold={contagemTabBehavior === "icone"}
+            >
+              Ícone
+            </button>
+            <button
+              onclick={() => saveBehavior("icone_fixo")}
+              disabled={savingBehavior}
+              class="inline-flex h-9 items-center border px-4 text-sm hover:bg-accent disabled:opacity-50"
+              class:border-primary={contagemTabBehavior === "icone_fixo"}
+              class:bg-accent={contagemTabBehavior === "icone_fixo"}
+              class:text-primary={contagemTabBehavior === "icone_fixo"}
+              class:font-semibold={contagemTabBehavior === "icone_fixo"}
+            >
+              Ícone Fixo
+            </button>
+          </div>
+          <p class="mt-2 text-xs text-muted-foreground">
+            {contagemTabBehavior === "icone"
+              ? "Ícone: botão + junto das abas (comportamento atual)."
+              : "Ícone Fixo: botão fixo em um canto, facilita múltiplos cliques."}
+          </p>
+        </div>
+
+        <h2 class="pt-2 text-sm font-semibold">Grupos de conciliação (Posto)</h2>
         {#each grupos as grupo, gi}
           <div class="border">
             <div class="flex flex-wrap items-center gap-3 border-b bg-muted/40 px-4 py-2">

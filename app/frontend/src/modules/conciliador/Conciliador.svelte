@@ -61,16 +61,6 @@
       restView = "importacao";
     }
   }
-
-  function novoPosto() {
-    activeTipo = "posto";
-    showImportacao("posto");
-  }
-
-  function novoRestaurante() {
-    activeTipo = "restaurante";
-    showImportacao("restaurante");
-  }
 </script>
 
 <div class="flex h-full flex-col overflow-hidden">
@@ -109,18 +99,6 @@
           {showConfig ? "Voltar" : "Configuracoes"}
         </button>
       {/if}
-      <button
-        onclick={novoPosto}
-        class="inline-flex h-8 items-center bg-primary px-3 text-sm text-primary-foreground hover:bg-primary-hover"
-      >
-        + Novo Posto
-      </button>
-      <button
-        onclick={novoRestaurante}
-        class="inline-flex h-8 items-center bg-primary px-3 text-sm text-primary-foreground hover:bg-primary-hover"
-      >
-        + Novo Restaurante
-      </button>
     </div>
   </div>
 

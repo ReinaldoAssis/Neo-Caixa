@@ -248,12 +248,11 @@
         caixaId = id;
       }
     } else {
-      await fetch(`/api/conciliador/conciliacoes/${caixaId}`, {
+      await fetch("/api/conciliador/conciliacoes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...payload, id: caixaId }),
+        body: JSON.stringify({ ...payload, id: caixaId, status: "conciliado" }),
       });
-      await fetch(`/api/conciliador/conciliacoes/${caixaId}/conciliar`, { method: "POST" });
     }
     onSalvo();
   }

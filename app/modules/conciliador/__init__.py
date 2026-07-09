@@ -32,6 +32,8 @@ from app.modules.conciliador.config_posto import (
     default_config,
     config_category_keys,
     config_labels,
+    load_settings,
+    save_settings,
 )
 from app.modules.conciliador.export import generate_conciliation_pdf_bytes
 
@@ -379,6 +381,22 @@ async def reset_config_posto():
         "categorias": config_category_keys(config),
         "labels": config_labels(config),
     }
+
+
+# ─── Settings do módulo ──────────────────────────────────────────
+
+@router.get("/config/settings")
+async def get_module_settings():
+    return load_settings(app_context.database)
+
+
+@router.put("/config/settings")
+async def update_module_settings(data: dict):
+    try:
+        saved = save_settings(app_context.database, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return saved
 
 
 # ─── Validação de contagens ──────────────────────────────────────

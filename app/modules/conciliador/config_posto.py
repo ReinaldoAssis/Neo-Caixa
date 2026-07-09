@@ -147,6 +147,56 @@ def load_config(database) -> dict:
     return {"grupos": doc["grupos"]}
 
 
+# ─── Settings do módulo (aplica a posto e restaurante) ───────────
+
+SETTINGS_KEY = "modulo_settings"
+
+CONTAGEM_TAB_BEHAVIORS = ("icone", "icone_fixo")
+
+DEFAULT_SETTINGS = {
+    "contagem_tab_behavior": "icone",
+}
+
+
+def default_settings() -> dict:
+    return dict(DEFAULT_SETTINGS)
+
+
+def load_settings(database) -> dict:
+    doc = None
+    try:
+        results = database.search(CONFIG_TABLE, {"key": SETTINGS_KEY})
+        doc = results[0] if results else None
+    except Exception:
+        doc = None
+    settings = default_settings()
+    if doc:
+        behavior = doc.get("contagem_tab_behavior")
+        if behavior in CONTAGEM_TAB_BEHAVIORS:
+            settings["contagem_tab_behavior"] = behavior
+    return settings
+
+
+def save_settings(database, data: dict) -> dict:
+    settings = default_settings()
+    behavior = (data or {}).get("contagem_tab_behavior")
+    if behavior not in CONTAGEM_TAB_BEHAVIORS:
+        raise ValueError(
+            f"contagem_tab_behavior invalido. Use um de: {', '.join(CONTAGEM_TAB_BEHAVIORS)}"
+        )
+    settings["contagem_tab_behavior"] = behavior
+    payload = {"key": SETTINGS_KEY, **settings}
+    existing = database.search(CONFIG_TABLE, {"key": SETTINGS_KEY})
+    if existing:
+        raw_id = getattr(existing[0], "doc_id", None)
+        if raw_id is None:
+            raw_id = existing[0].get("id")
+        database.update(CONFIG_TABLE, str(raw_id), payload)
+    else:
+        database.insert(CONFIG_TABLE, payload)
+    return settings
+
+
 def save_config(database, config: dict) -> dict:
     grupos = _validate_grupos(config.get("grupos"))
     payload = {"key": CONFIG_KEY, "grupos": grupos}

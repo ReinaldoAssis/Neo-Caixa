@@ -42,6 +42,22 @@
     }
   }
 
+  let contagemTabBehavior = $state<"icone" | "icone_fixo">("icone");
+
+  async function loadModuleSettings() {
+    try {
+      const res = await fetch("/api/conciliador/config/settings");
+      if (res.ok) {
+        const s = await res.json();
+        if (s.contagem_tab_behavior === "icone_fixo" || s.contagem_tab_behavior === "icone") {
+          contagemTabBehavior = s.contagem_tab_behavior;
+        }
+      }
+    } catch {
+      // keep default
+    }
+  }
+
   const restCategories = [
     "PIX", "ELO_DEBITO", "MAESTRO", "VC_ELECTRON", "AMEX",
     "ELO_CR", "MASTERCARD", "VISA", "DINHEIRO",
@@ -134,6 +150,7 @@
   });
 
   onMount(async () => {
+    await loadModuleSettings();
     if (tipo === "posto") {
       await loadPostoConfig();
     }
@@ -457,6 +474,27 @@
       if (!res.ok) throw new Error("Erro ao salvar");
       const result = await res.json();
       savedId = result.id;
+      onSalvo();
+    } catch (e: any) {
+      errorMessage = e.message;
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function saveAndFinalize() {
+    loading = true;
+    const payload = buildPayload("conciliado");
+    try {
+      const res = await fetch("/api/conciliador/conciliacoes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error("Erro ao salvar");
+      const result = await res.json();
+      savedId = result.id;
+      status = "conciliado";
       onSalvo();
     } catch (e: any) {
       errorMessage = e.message;
@@ -805,6 +843,7 @@
         {readonly}
         bind:contagens={contagensDinheiro}
         onChange={handleContagemChange}
+        tabBehavior={contagemTabBehavior}
       />
     </div>
 
@@ -903,15 +942,22 @@
   <div class="flex items-center gap-3 border-t px-4 py-3">
     <button
       onclick={saveDraft}
-      disabled={loading}
-      class="inline-flex h-9 items-center rounded-md border px-4 text-sm hover:bg-accent disabled:opacity-50"
+      disabled={loading || readonly}
+      class="inline-flex h-9 items-center border px-4 text-sm hover:bg-accent disabled:opacity-50"
     >
       Salvar Rascunho
     </button>
     <button
+      onclick={saveAndFinalize}
+      disabled={loading || readonly}
+      class="inline-flex h-9 items-center border border-primary px-4 text-sm text-primary hover:bg-accent disabled:opacity-50"
+    >
+      Salvar e Finalizar
+    </button>
+    <button
       onclick={verResultado}
       disabled={loading}
-      class="ml-auto inline-flex h-9 items-center rounded-md bg-primary px-6 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+      class="ml-auto inline-flex h-9 items-center bg-primary px-6 text-sm text-primary-foreground hover:bg-primary-hover disabled:opacity-50"
     >
       Ver Resultado
     </button>

@@ -3,9 +3,10 @@
     readonly: boolean;
     contagens: any[];
     onChange?: () => void;
+    tabBehavior?: "icone" | "icone_fixo";
   }
 
-  let { readonly = false, contagens = $bindable([] as any[]), onChange }: Props = $props();
+  let { readonly = false, contagens = $bindable([] as any[]), onChange, tabBehavior = "icone" }: Props = $props();
 
   const denominations = [200, 100, 50, 20, 10, 5, 2];
   let activeTab = $state(0);
@@ -26,9 +27,19 @@
   const activeContagem = $derived(contagens[activeTab]);
 
   function tabClass(idx: number): string {
-    const base = "inline-flex items-center gap-1 rounded-t-md border border-b-0 px-3 py-1.5 text-sm transition-colors";
-    if (idx === activeTab) return base + " bg-background font-semibold";
+    const base = "inline-flex items-center gap-1 border border-b-0 px-3 py-1 text-sm transition-colors";
+    if (idx === activeTab) return base + " bg-background font-semibold text-primary border-primary";
     return base + " bg-muted/50 text-muted-foreground";
+  }
+
+  function nextLabel(): string {
+    let max = 0;
+    for (const c of contagens) {
+      if (c.label === "Geral") continue;
+      const n = parseInt(String(c.label).trim(), 10);
+      if (!isNaN(n) && n > max) max = n;
+    }
+    return String(max + 1);
   }
 
   function formatMoney(value: number): string {
@@ -93,10 +104,9 @@
   }
 
   function addContagem() {
-    const index = contagens.length;
     const c = {
       id: crypto.randomUUID(),
-      label: `Contagem ${index}`,
+      label: nextLabel(),
       notas: Object.fromEntries(denominations.map(d => [String(d), 0])),
       seriais_200: [] as string[],
       moedas: 0,
@@ -116,6 +126,11 @@
     if (onChange) onChange();
   }
 
+  function removeActive() {
+    if (activeTab === 0) return;
+    removeContagem(activeTab);
+  }
+
   function toggleGeralEdit() {
     const geral = contagens[0];
     if (!geral) return;
@@ -131,112 +146,128 @@
   }
 </script>
 
-<div class="space-y-3">
+<div class="space-y-2">
   <!-- Tab buttons -->
-  <div class="flex flex-wrap items-center gap-1 border-b">
-    {#each contagens as contagem, idx}
-      <button
-        onclick={() => (activeTab = idx)}
-        class={tabClass(idx)}
-      >
-        {contagem.label}
-        {#if contagem.label !== "Geral" && !readonly}
-          <span
-            onclick={(e) => { e.stopPropagation(); removeContagem(idx); }}
-            class="ml-1 cursor-pointer text-xs text-red-500 hover:text-red-700"
-          >
-            x
-          </span>
-        {/if}
-      </button>
-    {/each}
-    {#if !readonly}
+  <div class="flex items-center gap-2">
+    <div class="flex flex-1 flex-wrap items-center gap-1 border-b">
+      {#each contagens as contagem, idx}
+        <button
+          onclick={() => (activeTab = idx)}
+          class={tabClass(idx)}
+        >
+          {contagem.label}
+        </button>
+      {/each}
+      {#if !readonly && tabBehavior === "icone"}
+        <button
+          onclick={addContagem}
+          class="inline-flex h-7 w-7 items-center justify-center text-sm text-muted-foreground hover:bg-accent"
+          title="Nova Contagem"
+        >
+          +
+        </button>
+      {/if}
+    </div>
+    {#if !readonly && tabBehavior === "icone_fixo"}
       <button
         onclick={addContagem}
-        class="inline-flex h-7 w-7 items-center justify-center rounded text-sm text-muted-foreground hover:bg-accent"
+        class="inline-flex h-8 shrink-0 items-center gap-1 bg-primary px-3 text-sm text-primary-foreground hover:bg-primary-hover"
         title="Nova Contagem"
       >
-        +
+        + Nova Contagem
       </button>
     {/if}
   </div>
 
   {#if activeContagem}
-    <div class="rounded-lg border p-4">
-      <div class="mb-3 flex items-center gap-2">
+    <div class="border p-3">
+      <div class="mb-2 flex items-center gap-2">
         {#if activeContagem.label !== "Geral" || activeContagem.editado}
           <input
             type="text"
             bind:value={activeContagem.label}
             disabled={readonly}
-            class="rounded-md border bg-background px-2 py-1 text-sm font-semibold"
+            class="border bg-background px-2 py-1 text-sm font-semibold w-28"
           />
         {:else}
           <span class="font-semibold">{activeContagem.label}</span>
           <span class="text-xs text-muted-foreground">(soma automatica das demais contagens)</span>
+        {/if}
+        {#if !readonly && activeTab !== 0}
+          <button
+            onclick={removeActive}
+            class="ml-auto inline-flex h-7 items-center gap-1 border border-red-300 px-2 text-xs text-red-600 hover:bg-red-50"
+            title="Excluir esta contagem"
+          >
+            Excluir contagem
+          </button>
         {/if}
       </div>
 
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b text-left text-muted-foreground">
-            <th class="pb-2 pr-4">Cedula</th>
-            <th class="pb-2 pr-4">Valor Unit.</th>
-            <th class="pb-2 pr-4">Qtde.</th>
-            <th class="pb-2 pr-4">Subtotal</th>
+            <th class="pb-1 pr-4 font-medium">Cedula</th>
+            <th class="pb-1 pr-4 font-medium">Valor Unit.</th>
+            <th class="pb-1 pr-4 font-medium">Qtde.</th>
+            <th class="pb-1 pr-4 text-right font-medium">Subtotal</th>
           </tr>
         </thead>
         <tbody>
           {#each denominations as denom}
             <tr class="border-b">
-              <td class="py-1.5 pr-4">R$ {denom}</td>
-              <td class="py-1.5 pr-4">{formatMoney(denom)}</td>
-              <td class="py-1.5 pr-4">
+              <td class="py-0.5 pr-4">R$ {denom}</td>
+              <td class="py-0.5 pr-4 text-muted-foreground">{formatMoney(denom)}</td>
+              <td class="py-0.5 pr-4">
                 <input
                   type="text"
                   value={activeContagem.notas[String(denom)] || "0"}
                   oninput={(e) => handleNotaChange(activeContagem, denom, e)}
                   disabled={readonly || (activeContagem.label === "Geral" && !activeContagem.editado)}
-                  class="w-20 rounded-md border bg-background px-2 py-1 text-sm"
+                  class="w-16 border bg-background px-2 py-0.5 text-sm"
                 />
               </td>
-              <td class="py-1.5 text-right">{formatMoney((parseInt(activeContagem.notas[String(denom)] || "0") || 0) * denom)}</td>
+              <td class="py-0.5 text-right tabular-nums">{formatMoney((parseInt(activeContagem.notas[String(denom)] || "0") || 0) * denom)}</td>
             </tr>
           {/each}
           <tr class="border-b">
-            <td class="py-1.5 pr-4">Moedas</td>
+            <td class="py-0.5 pr-4">Moedas</td>
             <td></td>
-            <td class="py-1.5 pr-4">
+            <td class="py-0.5 pr-4">
               <input
                 type="text"
                 value={activeContagem.moedas || "0"}
                 oninput={(e) => { activeContagem.moedas = (e.target as HTMLInputElement).value; recalculate(activeContagem); }}
                 disabled={readonly || (activeContagem.label === "Geral" && !activeContagem.editado)}
-                class="w-20 rounded-md border bg-background px-2 py-1 text-sm"
+                class="w-16 border bg-background px-2 py-0.5 text-sm"
               />
             </td>
             <td></td>
           </tr>
           <tr class="border-b">
-            <td class="py-1.5 pr-4">Depositos</td>
+            <td class="py-0.5 pr-4">Depositos</td>
             <td></td>
-            <td class="py-1.5 pr-4">
+            <td class="py-0.5 pr-4">
               <input
                 type="text"
                 value={activeContagem.depositos || "0"}
                 oninput={(e) => { activeContagem.depositos = (e.target as HTMLInputElement).value; recalculate(activeContagem); }}
                 disabled={readonly || (activeContagem.label === "Geral" && !activeContagem.editado)}
-                class="w-20 rounded-md border bg-background px-2 py-1 text-sm"
+                class="w-16 border bg-background px-2 py-0.5 text-sm"
               />
             </td>
             <td></td>
+          </tr>
+          <tr class="border-t-2 border-primary/30 bg-primary/5 font-bold">
+            <td class="py-1 pr-4" colspan="3">Total (Moedas: {formatMoney(activeContagem.moedas || 0)})</td>
+            <td class="py-1 text-right tabular-nums text-primary">{formatMoney(activeContagem.total)}</td>
           </tr>
         </tbody>
       </table>
 
       <!-- Seriais R$ 200 -->
-      <div class="mt-3">
-        <p class="mb-2 text-xs text-muted-foreground">
+      <div class="mt-2">
+        <p class="mb-1 text-xs text-muted-foreground">
           {#if activeContagem.label !== "Geral" || activeContagem.editado}
             Seriais das notas de R$ 200 ({activeContagem.seriais_200?.length || 0}):
           {:else}
@@ -244,7 +275,7 @@
           {/if}
         </p>
         {#if (activeContagem.seriais_200 || []).length > 0}
-          <div class="flex flex-wrap gap-2">
+          <div class="flex flex-wrap gap-1">
             {#each activeContagem.seriais_200 as serial, si}
               {#if activeContagem.label !== "Geral" || activeContagem.editado}
                 <input
@@ -253,20 +284,16 @@
                   disabled={readonly}
                   maxlength={5}
                   placeholder="00000"
-                  class="w-20 rounded-md border bg-background px-2 py-1 text-sm"
+                  class="w-16 border bg-background px-2 py-0.5 text-sm"
                 />
               {:else}
-                <span class="rounded bg-muted px-2 py-1 text-sm">{serial}</span>
+                <span class="bg-muted px-2 py-0.5 text-sm">{serial}</span>
               {/if}
             {/each}
           </div>
         {:else}
           <span class="text-xs text-muted-foreground">Nenhuma nota de R$ 200</span>
         {/if}
-      </div>
-
-      <div class="mt-3 text-right font-bold">
-        Total: {formatMoney(activeContagem.total)} (Moedas: {formatMoney(activeContagem.moedas || 0)})
       </div>
     </div>
   {/if}
@@ -275,7 +302,7 @@
     <div class="flex gap-3">
       <button
         onclick={toggleGeralEdit}
-        class="inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-accent"
+        class="inline-flex h-8 items-center border px-3 text-sm hover:bg-accent"
       >
         {contagens[0]?.editado ? "Reverter ao automatico" : "Editar Geral"}
       </button>
