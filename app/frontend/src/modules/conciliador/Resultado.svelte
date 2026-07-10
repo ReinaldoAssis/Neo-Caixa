@@ -17,6 +17,9 @@
   let loading = $state(true);
   let caixaId = $state("");
 
+  const isSplit = $derived(tipo === "restaurante" && !!caixa?.split_mode && !!caixa?.turnos);
+  let turnoRows = $state<{ turno: number; rows: any[]; totalDiff: number }[]>([]);
+
   let postoLabels = $state<Record<string, string>>({
     PREMMIA_CARTAO: "PREMMIA CARTAO", PREMMIA_PIX: "PREMMIA PIX",
     PREMMIA_VALE: "PREMMIA VALE", PREMMIA_CUPOM: "PREMMIA CUPOM",
@@ -56,6 +59,7 @@
   let avulsoValor = $state("");
   let avulsoCat = $state("");
   let avulsoNovaCat = $state("");
+  let avulsoTurno = $state(1);
 
   const catOptions = $derived(
     tipo === "posto"
@@ -69,6 +73,9 @@
     if (tipo === "posto") {
       await loadPostoConfig();
     }
+    if (isSplit) {
+      buildSplitRows();
+    }
     if (caixa.id || caixa._id) {
       caixaId = String(caixa.id || caixa._id);
       loadResultado();
@@ -77,6 +84,40 @@
       loading = false;
     }
   });
+
+  function buildRestRowsFor(cats: Record<string, any>, avulsos: any[], dinheiroReal: number) {
+    const out: any[] = [];
+    for (const key of restCategories) {
+      const v = cats[key] || { sistema: 0, real: 0 };
+      let sistema = v.sistema || 0;
+      let real = key === "DINHEIRO" ? dinheiroReal : (v.real || 0);
+      for (const av of avulsos) {
+        if (av.categoria_vinculada === key) {
+          const delta = av.tipo === "RECEITA" ? av.valor : -av.valor;
+          if (av.coluna === "real") real += delta;
+          else sistema += delta;
+        }
+      }
+      sistema = Math.round(sistema * 100) / 100;
+      real = Math.round(real * 100) / 100;
+      const diff = Math.round((sistema - real) * 100) / 100;
+      out.push({ key, label: restLabels[key], sistema, real, diferenca: diff, status: Math.abs(diff) < 0.005 ? "OK" : "DIVERGENTE" });
+    }
+    return out;
+  }
+
+  function buildSplitRows() {
+    const turnos = caixa.turnos || {};
+    turnoRows = [1, 2].map((n) => {
+      const store = turnos[String(n)] || { categorias: {}, contagens: [], avulsos: [] };
+      const geral = (store.contagens || []).find((c: any) => c.label === "Geral");
+      const dinheiroReal = geral?.total || 0;
+      const avulsosTurno = lancamentosAvulsos.filter((a) => (a.turno ?? null) === n);
+      const r = buildRestRowsFor(store.categorias || {}, avulsosTurno, dinheiroReal);
+      const totalDiff = Math.round(r.reduce((s, row) => s + (row.diferenca || 0), 0) * 100) / 100;
+      return { turno: n, rows: r, totalDiff };
+    });
+  }
 
   async function loadResultado() {
     loading = true;
@@ -211,11 +252,13 @@
       coluna: avulsoColuna,
       categoria_vinculada,
       categoria_nova,
+      turno: isSplit ? avulsoTurno : null,
     }];
     avulsoDesc = "";
     avulsoValor = "";
     avulsoNovaCat = "";
     buildFromPayload();
+    if (isSplit) buildSplitRows();
   }
 
   function getCatLabel(cat: any): string {
@@ -229,6 +272,7 @@
   function removeAvulso(idx: number) {
     lancamentosAvulsos = lancamentosAvulsos.filter((_: any, i: number) => i !== idx);
     buildFromPayload();
+    if (isSplit) buildSplitRows();
   }
 
   const totalDiff = $derived(rows.reduce((sum: number, r: any) => sum + (r.diferenca || 0), 0));
@@ -306,6 +350,57 @@
         <p class="text-muted-foreground">Carregando...</p>
       </div>
     {:else}
+      {#if isSplit}
+        {#each turnoRows as tr}
+          <div class="mb-6">
+            <h2 class="mb-2 text-sm font-semibold text-primary">Turno {tr.turno} {caixa.split_time ? `(divisao ${caixa.split_time})` : ""}</h2>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="border-b bg-muted/50 text-left">
+                    <th class="px-4 py-2">Categoria</th>
+                    <th class="px-4 py-2 text-right">Sistema (R$)</th>
+                    <th class="px-4 py-2 text-right">Real (R$)</th>
+                    <th class="px-4 py-2 text-right">Diferenca (R$)</th>
+                    <th class="px-4 py-2 text-center">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each tr.rows as row}
+                    <tr class="border-b">
+                      <td class="px-4 py-2">{row.label}</td>
+                      <td class="px-4 py-2 text-right">{formatMoney(row.sistema)}</td>
+                      <td class="px-4 py-2 text-right">{formatMoney(row.real)}</td>
+                      <td class="px-4 py-2 text-right">
+                        <span class={row.status === "OK" ? "text-green-600" : "text-red-600"}>{formatMoney(row.diferenca)}</span>
+                      </td>
+                      <td class="px-4 py-2 text-center">
+                        <span
+                          class="inline-block rounded-full px-2 py-0.5 text-xs"
+                          class:bg-green-100={row.status === "OK"}
+                          class:text-green-700={row.status === "OK"}
+                          class:bg-red-100={row.status !== "OK"}
+                          class:text-red-700={row.status !== "OK"}
+                        >
+                          {row.status}
+                        </span>
+                      </td>
+                    </tr>
+                  {/each}
+                  <tr class="border-t-2 font-bold">
+                    <td colspan="3" class="px-4 py-2 text-right">Diferença Turno {tr.turno}:</td>
+                    <td class="px-4 py-2 text-right">
+                      <span class={Math.abs(tr.totalDiff) < 0.005 ? "text-green-600" : "text-red-600"}>{formatMoney(tr.totalDiff)}</span>
+                    </td>
+                    <td></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        {/each}
+        <h2 class="mb-2 text-sm font-semibold text-primary">Resultado Geral (combinado)</h2>
+      {/if}
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead>
@@ -375,6 +470,12 @@
       <div class="mt-6 rounded-lg border p-4">
         <h3 class="mb-3 text-sm font-semibold">Lancamentos Avulsos</h3>
         <div class="mb-3 flex flex-wrap items-center gap-2">
+          {#if isSplit}
+            <Select bind:value={avulsoTurno}>
+              <option value={1}>Turno 1</option>
+              <option value={2}>Turno 2</option>
+            </Select>
+          {/if}
           <Select bind:value={avulsoTipo}>
             <option>RECEITA</option>
             <option>DESPESA</option>
@@ -424,6 +525,9 @@
           <table class="w-full text-sm border">
             <thead>
               <tr class="bg-muted">
+                {#if isSplit}
+                  <th class="px-3 py-1.5 text-left">Turno</th>
+                {/if}
                 <th class="px-3 py-1.5 text-left">Tipo</th>
                 <th class="px-3 py-1.5 text-left">Coluna</th>
                 <th class="px-3 py-1.5 text-left">Descricao</th>
@@ -435,6 +539,9 @@
             <tbody>
               {#each lancamentosAvulsos as avulso, idx}
                 <tr class="border-t">
+                  {#if isSplit}
+                    <td class="px-3 py-1.5">{avulso.turno ? `Turno ${avulso.turno}` : "-"}</td>
+                  {/if}
                   <td class="px-3 py-1.5">{avulso.tipo}</td>
                   <td class="px-3 py-1.5">{avulso.coluna}</td>
                   <td class="px-3 py-1.5">{avulso.descricao}</td>

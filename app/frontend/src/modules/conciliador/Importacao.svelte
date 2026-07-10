@@ -9,9 +9,10 @@
     onVoltar: () => void;
     onResultado: (c: any) => void;
     onSalvo: () => void;
+    onIdChange?: (id: string) => void;
   }
 
-  let { tipo, conciliacaoId, onVoltar, onResultado, onSalvo }: Props = $props();
+  let { tipo, conciliacaoId, onVoltar, onResultado, onSalvo, onIdChange }: Props = $props();
 
   let postoCategories = $state<string[]>([
     "PREMMIA_CARTAO", "PREMMIA_PIX", "PREMMIA_VALE", "PREMMIA_CUPOM",
@@ -43,6 +44,7 @@
   }
 
   let contagemTabBehavior = $state<"icone" | "icone_fixo">("icone");
+  let serial200Mode = $state<"obrigatorio_todas" | "opcional_geral" | "opcional_todas">("obrigatorio_todas");
 
   async function loadModuleSettings() {
     try {
@@ -51,6 +53,9 @@
         const s = await res.json();
         if (s.contagem_tab_behavior === "icone_fixo" || s.contagem_tab_behavior === "icone") {
           contagemTabBehavior = s.contagem_tab_behavior;
+        }
+        if (["obrigatorio_todas", "opcional_geral", "opcional_todas"].includes(s.serial_200_mode)) {
+          serial200Mode = s.serial_200_mode;
         }
       }
     } catch {
@@ -78,6 +83,19 @@
   let readonly = $derived(status === "conciliado");
   let turno = $state("Todos");
 
+  // ─── Split interno (restaurante, turno "Todos") ───
+  let splitMode = $state(false);
+  let splitTime = $state("");
+  let activeTurno = $state(1);
+  let turnoStore = $state<Record<number, {
+    categorias: Record<string, any>;
+    sistemaVars: Record<string, string>;
+    contagens: any[];
+    avulsos: any[];
+  }>>({ 1: null as any, 2: null as any });
+  let showSplitModal = $state(false);
+  let splitModalTime = $state("");
+
   let categorias = $state<Record<string, { sistema: number; site?: number; real?: number }>>({});
   let sistemaVars = $state<Record<string, string>>({});
 
@@ -99,6 +117,10 @@
   let premmiaLancamentos = $state<any[]>([]);
 
   let savedId = $state<string | null>(null);
+  let hydrated = $state(false);
+  let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let autosaving = $state(false);
+  let lastSavedAt = $state("");
 
   // Time range modal for restaurante
   let showTimeModal = $state(false);
@@ -156,8 +178,9 @@
     }
     initCategories();
     if (conciliacaoId) {
-      loadConciliacao(conciliacaoId);
+      await loadConciliacao(conciliacaoId);
     }
+    hydrated = true;
   });
 
   function initCategories() {
@@ -197,9 +220,20 @@
         despesas = doc.despesas || 0;
         initPostoSistemaVars();
       } else {
-        turno = doc.turno === 1 ? "T1" : doc.turno === 2 ? "T2" : "Todos";
-        initRestSistemaVars();
-        initRestRealLabels();
+        if (doc.split_mode && doc.turnos) {
+          splitMode = true;
+          splitTime = doc.split_time || "";
+          turnoStore[1] = doc.turnos["1"] || emptyRestTurno();
+          turnoStore[2] = doc.turnos["2"] || emptyRestTurno();
+          activeTurno = 1;
+          loadTurno(1);
+          initRestSistemaVars();
+          turno = "Todos";
+        } else {
+          turno = doc.turno === 1 ? "T1" : doc.turno === 2 ? "T2" : "Todos";
+          initRestSistemaVars();
+          initRestRealLabels();
+        }
       }
     } catch (e: any) {
       errorMessage = e.message;
@@ -326,6 +360,24 @@
     const file = input.files?.[0];
     if (!file) return;
 
+    if (splitMode) {
+      loading = true;
+      try {
+        const result = await uploadFile(
+          `/parser/pagbank-restaurante-split?split_time=${encodeURIComponent(splitTime)}`,
+          file,
+        );
+        applySplitReais(result);
+        statusRestPagbank =
+          `Dividido em ${splitTime} — T1: ${result.turno1?.registros_aprovados || 0} / T2: ${result.turno2?.registros_aprovados || 0} registros`;
+      } catch (err: any) {
+        errorMessage = err.message;
+      } finally {
+        loading = false;
+      }
+      return;
+    }
+
     let horaIni: string | null = null;
     let horaFim: string | null = null;
 
@@ -354,6 +406,98 @@
     } finally {
       loading = false;
     }
+  }
+
+  // ─── Split interno (restaurante) ───
+  function emptyGeralContagem() {
+    return {
+      id: crypto.randomUUID(),
+      label: "Geral",
+      editado: false,
+      notas: { "200": 0, "100": 0, "50": 0, "20": 0, "10": 0, "5": 0, "2": 0 },
+      seriais_200: [] as string[],
+      moedas: 0,
+      depositos: 0,
+      total: 0,
+    };
+  }
+
+  function emptyRestTurno() {
+    const cats: Record<string, any> = {};
+    const vars: Record<string, string> = {};
+    for (const key of restCategories) {
+      cats[key] = { sistema: 0, real: 0 };
+      vars[key] = "";
+    }
+    return { categorias: cats, sistemaVars: vars, contagens: [emptyGeralContagem()], avulsos: [] };
+  }
+
+  function snapshotActiveTurno() {
+    turnoStore[activeTurno] = {
+      categorias: JSON.parse(JSON.stringify(categorias)),
+      sistemaVars: { ...sistemaVars },
+      contagens: JSON.parse(JSON.stringify(contagensDinheiro)),
+      avulsos: JSON.parse(JSON.stringify(lancamentosAvulsos)),
+    };
+  }
+
+  function loadTurno(n: number) {
+    const s = turnoStore[n];
+    if (!s) return;
+    categorias = s.categorias;
+    sistemaVars = s.sistemaVars;
+    contagensDinheiro = s.contagens;
+    lancamentosAvulsos = s.avulsos;
+  }
+
+  function switchTurno(n: number) {
+    if (n === activeTurno) return;
+    snapshotActiveTurno();
+    activeTurno = n;
+    loadTurno(n);
+  }
+
+  function openSplitModal() {
+    splitModalTime = splitTime || "";
+    showSplitModal = true;
+  }
+
+  function confirmSplit() {
+    const t = splitModalTime.trim();
+    if (!/^\d{2}:\d{2}$/.test(t)) { errorMessage = "Formato invalido. Use hh:mm"; return; }
+    splitTime = t;
+    // Turno 1 recebe os dados atuais; Turno 2 comeca vazio
+    turnoStore[1] = {
+      categorias: JSON.parse(JSON.stringify(categorias)),
+      sistemaVars: { ...sistemaVars },
+      contagens: JSON.parse(JSON.stringify(contagensDinheiro)),
+      avulsos: JSON.parse(JSON.stringify(lancamentosAvulsos)),
+    };
+    turnoStore[2] = emptyRestTurno();
+    activeTurno = 1;
+    splitMode = true;
+    showSplitModal = false;
+  }
+
+  function disableSplit() {
+    snapshotActiveTurno();
+    // Mantém turno 1 como dados principais
+    loadTurno(1);
+    splitMode = false;
+    activeTurno = 1;
+  }
+
+  function applySplitReais(result: any) {
+    const store1 = turnoStore[1] || emptyRestTurno();
+    const store2 = turnoStore[2] || emptyRestTurno();
+    for (const key of restCategories) {
+      if (key === "DINHEIRO") continue;
+      store1.categorias[key] = { ...store1.categorias[key], real: result.turno1?.categorias?.[key]?.real || 0 };
+      store2.categorias[key] = { ...store2.categorias[key], real: result.turno2?.categorias?.[key]?.real || 0 };
+    }
+    turnoStore[1] = store1;
+    turnoStore[2] = store2;
+    loadTurno(activeTurno);
   }
 
   function handleFitcardChange(e: Event) {
@@ -415,6 +559,7 @@
   function addAvulso() {
     const valor = parseMoney(avulsoValor);
     if (valor <= 0) { errorMessage = "Valor deve ser maior que zero"; return; }
+    const avulsoTurno = tipo === "restaurante" && splitMode ? activeTurno : null;
     if (avulsoCat === "Nova categoria...") {
       if (!avulsoNovaCat.trim()) { errorMessage = "Informe o nome da nova categoria"; return; }
       lancamentosAvulsos = [...lancamentosAvulsos, {
@@ -425,6 +570,7 @@
         coluna: avulsoColuna,
         categoria_vinculada: null,
         categoria_nova: avulsoNovaCat.toUpperCase(),
+        turno: avulsoTurno,
       }];
     } else {
       let key = avulsoCat;
@@ -443,6 +589,7 @@
         coluna: avulsoColuna,
         categoria_vinculada: key,
         categoria_nova: null,
+        turno: avulsoTurno,
       }];
     }
     avulsoDesc = "";
@@ -484,6 +631,23 @@
 
   async function saveAndFinalize() {
     loading = true;
+    try {
+      const val = await fetch("/api/conciliador/validar-contagens", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contagens: contagensDinheiro }),
+      });
+      if (val.ok) {
+        const result = await val.json();
+        if (!result.valid) {
+          errorMessage = result.errors.join(" | ");
+          loading = false;
+          return;
+        }
+      }
+    } catch {
+      // if validation endpoint fails, proceed
+    }
     const payload = buildPayload("conciliado");
     try {
       const res = await fetch("/api/conciliador/conciliacoes", {
@@ -503,6 +667,19 @@
     }
   }
 
+  function mergeTurnoCategorias() {
+    const merged: Record<string, any> = {};
+    for (const key of restCategories) {
+      const c1 = turnoStore[1]?.categorias?.[key] || { sistema: 0, real: 0 };
+      const c2 = turnoStore[2]?.categorias?.[key] || { sistema: 0, real: 0 };
+      merged[key] = {
+        sistema: Math.round(((c1.sistema || 0) + (c2.sistema || 0)) * 100) / 100,
+        real: Math.round(((c1.real || 0) + (c2.real || 0)) * 100) / 100,
+      };
+    }
+    return merged;
+  }
+
   function buildPayload(st: string) {
     const base: any = {
       id: savedId || undefined,
@@ -520,16 +697,84 @@
       base.notas_a_prazo = notasPrazo;
       base.despesas = despesas;
       base.premmia_lancamentos = premmiaLancamentos;
+    } else if (splitMode) {
+      snapshotActiveTurno();
+      base.turno = null;
+      base.split_mode = true;
+      base.split_time = splitTime;
+      base.turnos = {
+        "1": turnoStore[1],
+        "2": turnoStore[2],
+      };
+      // Combina os dois turnos para totais/histórico
+      base.categorias = mergeTurnoCategorias();
+      base.contagens_dinheiro = [
+        ...(turnoStore[1]?.contagens || []),
+        ...(turnoStore[2]?.contagens || []),
+      ];
+      base.lancamentos_avulsos = [
+        ...(turnoStore[1]?.avulsos || []),
+        ...(turnoStore[2]?.avulsos || []),
+      ];
     } else {
       base.turno = turno === "T1" ? 1 : turno === "T2" ? 2 : null;
     }
     return base;
   }
 
-  function verResultado() {
+  async function verResultado() {
+    await persistNow();
     const payload = buildPayload(status === "conciliado" ? "conciliado" : "rascunho");
     onResultado(payload);
   }
+
+  async function persistNow(): Promise<string | null> {
+    if (readonly) return savedId;
+    autosaving = true;
+    try {
+      const payload = buildPayload("rascunho");
+      const res = await fetch("/api/conciliador/conciliacoes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        const result = await res.json();
+        if (result.id && result.id !== savedId) {
+          savedId = result.id;
+          onIdChange?.(result.id);
+        }
+        lastSavedAt = new Date().toLocaleTimeString();
+      }
+    } catch {
+      // silent - autosave is best-effort
+    } finally {
+      autosaving = false;
+    }
+    return savedId;
+  }
+
+  function scheduleAutosave() {
+    if (!hydrated || readonly) return;
+    if (autosaveTimer) clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(() => { persistNow(); }, 800);
+  }
+
+  $effect(() => {
+    // Track all persisted state so any change triggers a debounced autosave.
+    void data;
+    void turno;
+    void JSON.stringify(categorias);
+    void JSON.stringify(contagensDinheiro);
+    void JSON.stringify(lancamentosAvulsos);
+    void JSON.stringify(premmiaLancamentos);
+    void fitcardTotal;
+    void sangria;
+    void notasPrazo;
+    void despesas;
+    void observacoes;
+    scheduleAutosave();
+  });
 
   const catOptions = $derived(tipo === "posto"
     ? postoCategories.map(k => postoLabels[k]).concat(["Nova categoria..."])
@@ -626,6 +871,42 @@
     </div>
   {/if}
 
+  <!-- Split Modal -->
+  {#if showSplitModal}
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onclick={() => (showSplitModal = false)}>
+      <div class="w-96 border bg-background p-6 shadow-xl" onclick={(e) => e.stopPropagation()}>
+        <h3 class="mb-2 text-sm font-semibold">Dividir internamente por horario</h3>
+        <p class="mb-4 text-sm text-muted-foreground">
+          Informe o horario de divisao. Tudo antes desse horario será Turno 1, o restante Turno 2.
+        </p>
+        <div class="flex items-center gap-3">
+          <label class="w-28 text-sm">Horario</label>
+          <input
+            type="text"
+            value={splitModalTime}
+            oninput={(e) => { splitModalTime = formatHora((e.target as HTMLInputElement).value); }}
+            placeholder="hh:mm"
+            class="w-24 border bg-background px-3 py-1.5 text-sm"
+          />
+        </div>
+        <div class="mt-6 flex justify-end gap-3">
+          <button
+            onclick={() => (showSplitModal = false)}
+            class="inline-flex h-8 items-center border px-3 text-sm hover:bg-accent"
+          >
+            Cancelar
+          </button>
+          <button
+            onclick={confirmSplit}
+            class="inline-flex h-8 items-center bg-primary px-4 text-sm text-primary-foreground hover:bg-primary/90"
+          >
+            Dividir
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   <div class="flex-1 overflow-auto p-4">
     <!-- Date -->
     <div class="mb-4 rounded-lg border p-4">
@@ -640,11 +921,30 @@
         />
         {#if tipo === "restaurante"}
           <label class="ml-4 text-sm">Turno</label>
-          <Select bind:value={turno} disabled={readonly}>
+          <Select bind:value={turno} disabled={readonly || splitMode}>
             <option>T1</option>
             <option>T2</option>
             <option>Todos</option>
           </Select>
+          {#if turno === "Todos" && !splitMode && !readonly}
+            <button
+              onclick={openSplitModal}
+              class="ml-2 inline-flex h-8 items-center border border-primary px-3 text-sm text-primary hover:bg-accent"
+            >
+              Dividir internamente
+            </button>
+          {/if}
+          {#if splitMode}
+            <span class="ml-2 text-sm text-muted-foreground">Dividido em {splitTime}</span>
+            {#if !readonly}
+              <button
+                onclick={disableSplit}
+                class="ml-2 inline-flex h-8 items-center border px-3 text-sm hover:bg-accent"
+              >
+                Desfazer divisao
+              </button>
+            {/if}
+          {/if}
         {/if}
       </div>
     </div>
@@ -781,11 +1081,48 @@
             Remover
           </button>
         </div>
+        {#if splitMode}
+          <p class="mt-2 text-xs text-muted-foreground">
+            O relatorio importado é dividido automaticamente: transacoes antes de {splitTime} vao para o Turno 1, o restante para o Turno 2.
+          </p>
+        {/if}
       </div>
+
+      {#if splitMode}
+        <!-- Turno tabs -->
+        <div class="mb-4 flex items-center gap-1 border-b">
+          <button
+            onclick={() => switchTurno(1)}
+            class="inline-flex items-center border border-b-0 px-4 py-1.5 text-sm transition-colors"
+            class:bg-background={activeTurno === 1}
+            class:font-semibold={activeTurno === 1}
+            class:text-primary={activeTurno === 1}
+            class:border-primary={activeTurno === 1}
+            class:bg-muted={activeTurno !== 1}
+            class:text-muted-foreground={activeTurno !== 1}
+          >
+            Turno 1
+          </button>
+          <button
+            onclick={() => switchTurno(2)}
+            class="inline-flex items-center border border-b-0 px-4 py-1.5 text-sm transition-colors"
+            class:bg-background={activeTurno === 2}
+            class:font-semibold={activeTurno === 2}
+            class:text-primary={activeTurno === 2}
+            class:border-primary={activeTurno === 2}
+            class:bg-muted={activeTurno !== 2}
+            class:text-muted-foreground={activeTurno !== 2}
+          >
+            Turno 2
+          </button>
+        </div>
+      {/if}
 
       <!-- Restaurante: Manual system values -->
       <div class="mb-4 rounded-lg border p-4">
-        <h3 class="mb-3 text-sm font-semibold">C - Conciliacao (Sistema = manual, Real = auto)</h3>
+        <h3 class="mb-3 text-sm font-semibold">
+          C - Conciliacao (Sistema = manual, Real = auto){splitMode ? ` — Turno ${activeTurno}` : ""}
+        </h3>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
@@ -837,13 +1174,14 @@
     <!-- Contagem de Dinheiro -->
     <div class="mb-4 rounded-lg border p-4">
       <h3 class="mb-3 text-sm font-semibold">
-        {tipo === "posto" ? "Contagem de Dinheiro" : "Contagem de Dinheiro (alimenta DINHEIRO real)"}
+        {tipo === "posto" ? "Contagem de Dinheiro" : `Contagem de Dinheiro (alimenta DINHEIRO real)${splitMode ? ` — Turno ${activeTurno}` : ""}`}
       </h3>
       <ContagemDinheiro
         {readonly}
         bind:contagens={contagensDinheiro}
         onChange={handleContagemChange}
         tabBehavior={contagemTabBehavior}
+        serialMode={serial200Mode}
       />
     </div>
 
@@ -947,6 +1285,11 @@
     >
       Salvar Rascunho
     </button>
+    {#if !readonly}
+      <span class="text-xs text-muted-foreground">
+        {autosaving ? "Salvando..." : lastSavedAt ? `Rascunho salvo automaticamente ${lastSavedAt}` : "Salvamento automatico ativo"}
+      </span>
+    {/if}
     <button
       onclick={saveAndFinalize}
       disabled={loading || readonly}

@@ -388,6 +388,70 @@ def parse_restaurante_pagbank_csv(
             pass
 
 
+def parse_restaurante_pagbank_split(
+    file_content: bytes,
+    filename: str,
+    split_time: str,
+) -> dict:
+    """Divide um unico relatorio PagBank em dois turnos por horario.
+
+    Transacoes com horario < split_time somam no turno 1, o restante no turno 2.
+    """
+    from datetime import datetime
+
+    try:
+        split = datetime.strptime(split_time.strip(), "%H:%M").time()
+    except ValueError:
+        raise ValueError("Horario de divisao invalido. Use o formato HH:MM.")
+
+    temp_path = Path(tempfile.gettempdir()) / f"rest_split_{filename}"
+    temp_path.write_bytes(file_content)
+    try:
+        cat1 = empty_categories_restaurante()
+        cat2 = empty_categories_restaurante()
+        approved1 = 0
+        approved2 = 0
+        with open(temp_path, "r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter=";")
+            if not reader.fieldnames or "Código da Transação" not in reader.fieldnames:
+                raise ValueError("O arquivo selecionado nao parece ser o CSV PagBank esperado.")
+            for row in reader:
+                if normalize_text(row.get("Status", "")) != "APROVADA":
+                    continue
+                raw_key = _restaurante_category_key(
+                    row.get("Bandeira", ""), row.get("Forma de Pagamento", "")
+                )
+                key = RESTAURANTE_CATEGORY_MAP.get(raw_key)
+                if not key or key == "DINHEIRO":
+                    continue
+                value = parse_money(row.get("Valor Bruto", "0"))
+                target = cat1
+                is_turno1 = True
+                dt_str = row.get("Data da Transação", "")
+                if dt_str:
+                    try:
+                        tx_time = datetime.strptime(dt_str.strip(), "%d/%m/%Y %H:%M").time()
+                        is_turno1 = tx_time < split
+                    except ValueError:
+                        is_turno1 = True
+                if is_turno1:
+                    cat1[key]["real"] = round(cat1[key]["real"] + value, 2)
+                    approved1 += 1
+                else:
+                    cat2[key]["real"] = round(cat2[key]["real"] + value, 2)
+                    approved2 += 1
+        return {
+            "turno1": {"categorias": cat1, "registros_aprovados": approved1},
+            "turno2": {"categorias": cat2, "registros_aprovados": approved2},
+            "split_time": split_time,
+        }
+    finally:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+
+
 def _parse_restaurante_pagbank_csv(
     path: Path,
     hora_ini: str | None = None,

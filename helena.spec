@@ -4,6 +4,12 @@ import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules
 
+sys.path.insert(0, str(Path('.').resolve()))
+try:
+    from app.version import __version__ as APP_VERSION
+except Exception:
+    APP_VERSION = '0.1.0'
+
 block_cipher = None
 
 hiddenimports = [
@@ -86,7 +92,8 @@ if sys.platform == 'darwin':
         info_plist={
             'CFBundleName': 'Neo Caixa',
             'CFBundleDisplayName': 'Neo Caixa',
-            'CFBundleShortVersionString': '0.1.0',
+            'CFBundleShortVersionString': APP_VERSION,
+            'CFBundleVersion': APP_VERSION,
             'NSHighResolutionCapable': True,
         },
     )

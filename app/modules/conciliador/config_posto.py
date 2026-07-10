@@ -153,8 +153,15 @@ SETTINGS_KEY = "modulo_settings"
 
 CONTAGEM_TAB_BEHAVIORS = ("icone", "icone_fixo")
 
+# Comportamento da obrigatoriedade do serial das notas de R$ 200
+#   obrigatorio_todas -> serial obrigatorio em todas as contagens
+#   opcional_geral    -> serial opcional apenas na contagem Geral (obrigatorio nas demais)
+#   opcional_todas    -> serial opcional em todas as contagens
+SERIAL_200_MODES = ("obrigatorio_todas", "opcional_geral", "opcional_todas")
+
 DEFAULT_SETTINGS = {
     "contagem_tab_behavior": "icone",
+    "serial_200_mode": "obrigatorio_todas",
 }
 
 
@@ -174,17 +181,32 @@ def load_settings(database) -> dict:
         behavior = doc.get("contagem_tab_behavior")
         if behavior in CONTAGEM_TAB_BEHAVIORS:
             settings["contagem_tab_behavior"] = behavior
+        serial_mode = doc.get("serial_200_mode")
+        if serial_mode in SERIAL_200_MODES:
+            settings["serial_200_mode"] = serial_mode
     return settings
 
 
 def save_settings(database, data: dict) -> dict:
-    settings = default_settings()
-    behavior = (data or {}).get("contagem_tab_behavior")
-    if behavior not in CONTAGEM_TAB_BEHAVIORS:
-        raise ValueError(
-            f"contagem_tab_behavior invalido. Use um de: {', '.join(CONTAGEM_TAB_BEHAVIORS)}"
-        )
-    settings["contagem_tab_behavior"] = behavior
+    data = data or {}
+    settings = load_settings(database)
+
+    if "contagem_tab_behavior" in data:
+        behavior = data.get("contagem_tab_behavior")
+        if behavior not in CONTAGEM_TAB_BEHAVIORS:
+            raise ValueError(
+                f"contagem_tab_behavior invalido. Use um de: {', '.join(CONTAGEM_TAB_BEHAVIORS)}"
+            )
+        settings["contagem_tab_behavior"] = behavior
+
+    if "serial_200_mode" in data:
+        serial_mode = data.get("serial_200_mode")
+        if serial_mode not in SERIAL_200_MODES:
+            raise ValueError(
+                f"serial_200_mode invalido. Use um de: {', '.join(SERIAL_200_MODES)}"
+            )
+        settings["serial_200_mode"] = serial_mode
+
     payload = {"key": SETTINGS_KEY, **settings}
     existing = database.search(CONFIG_TABLE, {"key": SETTINGS_KEY})
     if existing:

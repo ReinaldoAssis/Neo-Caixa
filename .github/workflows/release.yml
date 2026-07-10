@@ -1,0 +1,115 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build/release (e.g. v0.1.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: macos
+          - os: windows-latest
+            platform: windows
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build frontend
+        working-directory: app/frontend
+        run: |
+          npm install
+          npm run build
+
+      - name: Build executable (PyInstaller)
+        run: pyinstaller helena.spec --clean --noconfirm
+
+      # ─── Package macOS (.app -> zip) ───
+      - name: Package macOS artifact
+        if: matrix.platform == 'macos'
+        run: |
+          cd dist
+          if [ -d "NeoCaixa.app" ]; then
+            ditto -c -k --sequesterRsrc --keepParent "NeoCaixa.app" "NeoCaixa-macos.zip"
+          else
+            zip -j "NeoCaixa-macos.zip" "NeoCaixa"
+          fi
+
+      - name: Upload macOS artifact
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeoCaixa-macos
+          path: dist/NeoCaixa-macos.zip
+
+      # ─── Package Windows (.exe) ───
+      - name: Upload Windows artifact
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeoCaixa-windows
+          path: dist/NeoCaixa.exe
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.value }}
+          name: Neo Caixa ${{ steps.tag.outputs.value }}
+          generate_release_notes: true
+          files: |
+            artifacts/NeoCaixa-macos/NeoCaixa-macos.zip
+            artifacts/NeoCaixa-windows/NeoCaixa.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

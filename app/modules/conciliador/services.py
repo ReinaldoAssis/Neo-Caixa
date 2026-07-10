@@ -227,16 +227,29 @@ def consolidate_contagens(contagens: list[dict]) -> dict:
     }
 
 
-def validate_contagens(contagens: list[dict]) -> list[str]:
+def _serial_required(label: str, serial_mode: str) -> bool:
+    if serial_mode == "opcional_todas":
+        return False
+    if serial_mode == "opcional_geral":
+        return label != "Geral"
+    return True
+
+
+def validate_contagens(
+    contagens: list[dict], serial_mode: str = "obrigatorio_todas"
+) -> list[str]:
     errors = []
     for c in contagens:
         label = c.get("label", "Contagem")
         notas = c.get("notas", {})
         qty_200 = int(notas.get("200", 0) or 0)
-        if qty_200 > 0:
-            if not serials_valid(c.get("seriais_200", []), qty_200):
-                errors.append(
-                    f'{label}: Cada nota de R$ 200 precisa de um serial numerico com 5 digitos '
-                    f'(esperado {qty_200})'
-                )
+        if qty_200 <= 0:
+            continue
+        if not _serial_required(label, serial_mode):
+            continue
+        if not serials_valid(c.get("seriais_200", []), qty_200):
+            errors.append(
+                f'{label}: Cada nota de R$ 200 precisa de um serial numerico com 5 digitos '
+                f'(esperado {qty_200})'
+            )
     return errors

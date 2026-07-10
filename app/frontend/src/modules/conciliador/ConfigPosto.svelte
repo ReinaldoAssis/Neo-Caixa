@@ -18,6 +18,94 @@
   let contagemTabBehavior = $state<"icone" | "icone_fixo">("icone");
   let savingBehavior = $state(false);
 
+  let serial200Mode = $state<"obrigatorio_todas" | "opcional_geral" | "opcional_todas">("obrigatorio_todas");
+  let savingSerial = $state(false);
+
+  let activeTab = $state<"geral" | "grupos">("geral");
+
+  // ─── Auto-update ───
+  let updChecking = $state(false);
+  let updDownloading = $state(false);
+  let updApplying = $state(false);
+  let updInfo = $state<any>(null);
+  let updError = $state("");
+  let updDownloadedPath = $state("");
+  let updStatus = $state("");
+
+  async function checkUpdates() {
+    updChecking = true;
+    updError = "";
+    updInfo = null;
+    updDownloadedPath = "";
+    updStatus = "";
+    try {
+      const res = await fetch("/api/update/check");
+      const data = await res.json();
+      updInfo = data;
+      if (data.error) {
+        updError = data.error;
+      } else if (!data.update_available) {
+        updStatus = `Voce ja esta na versao mais recente (${data.current_version}).`;
+      }
+    } catch (e: any) {
+      updError = e.message || "Falha ao checar atualizacoes.";
+    } finally {
+      updChecking = false;
+    }
+  }
+
+  async function downloadUpdate() {
+    if (!updInfo?.download_url) return;
+    updDownloading = true;
+    updError = "";
+    updStatus = "Baixando atualizacao...";
+    try {
+      const res = await fetch("/api/update/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ download_url: updInfo.download_url, asset_name: updInfo.asset_name }),
+      });
+      const data = await res.json();
+      if (data.downloaded) {
+        updDownloadedPath = data.path;
+        updStatus = "Download concluido. Clique em Instalar para aplicar.";
+      } else {
+        updError = data.error || "Falha no download.";
+        updStatus = "";
+      }
+    } catch (e: any) {
+      updError = e.message || "Falha no download.";
+      updStatus = "";
+    } finally {
+      updDownloading = false;
+    }
+  }
+
+  async function installUpdate() {
+    if (!updDownloadedPath) return;
+    if (!confirm("O aplicativo sera fechado e reaberto para instalar a atualizacao. Continuar?")) return;
+    updApplying = true;
+    updError = "";
+    updStatus = "Instalando... o app sera reiniciado.";
+    try {
+      const res = await fetch("/api/update/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: updDownloadedPath }),
+      });
+      const data = await res.json();
+      if (!data.applied) {
+        updError = data.error || "Falha ao instalar.";
+        updStatus = "";
+      }
+    } catch (e: any) {
+      // Connection likely drops as the app exits — treat as expected.
+      updStatus = "Instalando... o app sera reiniciado.";
+    } finally {
+      updApplying = false;
+    }
+  }
+
   onMount(load);
 
   async function load() {
@@ -33,6 +121,9 @@
         const s = await sres.json();
         if (s.contagem_tab_behavior === "icone_fixo" || s.contagem_tab_behavior === "icone") {
           contagemTabBehavior = s.contagem_tab_behavior;
+        }
+        if (["obrigatorio_todas", "opcional_geral", "opcional_todas"].includes(s.serial_200_mode)) {
+          serial200Mode = s.serial_200_mode;
         }
       }
     } catch {
@@ -57,6 +148,24 @@
       flash(e.message, "err");
     } finally {
       savingBehavior = false;
+    }
+  }
+
+  async function saveSerialMode(value: "obrigatorio_todas" | "opcional_geral" | "opcional_todas") {
+    serial200Mode = value;
+    savingSerial = true;
+    try {
+      const res = await fetch("/api/conciliador/config/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serial_200_mode: value }),
+      });
+      if (!res.ok) throw new Error("Erro ao salvar comportamento do serial");
+      flash("Comportamento do serial das notas de 200 atualizado.");
+    } catch (e: any) {
+      flash(e.message, "err");
+    } finally {
+      savingSerial = false;
     }
   }
 
@@ -162,27 +271,53 @@
 <div class="flex h-full flex-col overflow-hidden">
   <div class="flex items-center gap-3 border-b px-4 py-3">
     <div>
-      <h1 class="text-lg font-bold">Configuracao de Grupos - Posto</h1>
+      <h1 class="text-lg font-bold">Configuracoes</h1>
       <p class="text-xs text-muted-foreground">
-        Defina quais descricoes dos relatorios somam em cada grupo de conciliacao
+        Configuracoes gerais do conciliador (posto e restaurante)
       </p>
     </div>
-    <div class="ml-auto flex gap-2">
-      <button
-        onclick={resetDefault}
-        disabled={saving}
-        class="inline-flex h-8 items-center border px-3 text-sm hover:bg-accent disabled:opacity-50"
-      >
-        Restaurar padrao
-      </button>
-      <button
-        onclick={save}
-        disabled={saving}
-        class="inline-flex h-8 items-center bg-primary px-4 text-sm text-primary-foreground hover:bg-primary-hover disabled:opacity-50"
-      >
-        {saving ? "Salvando..." : "Salvar"}
-      </button>
-    </div>
+    {#if activeTab === "grupos"}
+      <div class="ml-auto flex gap-2">
+        <button
+          onclick={resetDefault}
+          disabled={saving}
+          class="inline-flex h-8 items-center border px-3 text-sm hover:bg-accent disabled:opacity-50"
+        >
+          Restaurar padrao
+        </button>
+        <button
+          onclick={save}
+          disabled={saving}
+          class="inline-flex h-8 items-center bg-primary px-4 text-sm text-primary-foreground hover:bg-primary-hover disabled:opacity-50"
+        >
+          {saving ? "Salvando..." : "Salvar"}
+        </button>
+      </div>
+    {/if}
+  </div>
+
+  <!-- Config sub-tabs -->
+  <div class="flex border-b px-4">
+    <button
+      onclick={() => (activeTab = "geral")}
+      class="px-4 py-2 text-sm font-medium transition-colors"
+      class:border-b-2={activeTab === "geral"}
+      class:border-primary={activeTab === "geral"}
+      class:text-foreground={activeTab === "geral"}
+      class:text-muted-foreground={activeTab !== "geral"}
+    >
+      Geral
+    </button>
+    <button
+      onclick={() => (activeTab = "grupos")}
+      class="px-4 py-2 text-sm font-medium transition-colors"
+      class:border-b-2={activeTab === "grupos"}
+      class:border-primary={activeTab === "grupos"}
+      class:text-foreground={activeTab === "grupos"}
+      class:text-muted-foreground={activeTab !== "grupos"}
+    >
+      Grupos Posto
+    </button>
   </div>
 
   {#if feedback}
@@ -205,6 +340,7 @@
         <p class="text-muted-foreground">Carregando...</p>
       </div>
     {:else}
+      {#if activeTab === "geral"}
       <div class="space-y-4">
         <!-- Comportamento aba de contagem -->
         <div class="border p-4">
@@ -243,7 +379,123 @@
           </p>
         </div>
 
-        <h2 class="pt-2 text-sm font-semibold">Grupos de conciliação (Posto)</h2>
+        <!-- Serial Nota de 200 -->
+        <div class="border p-4">
+          <h2 class="text-sm font-semibold">Serial Nota de 200</h2>
+          <p class="mb-3 text-xs text-muted-foreground">
+            Define a obrigatoriedade do serial das notas de R$ 200 nas contagens
+          </p>
+          <div class="flex flex-wrap gap-2">
+            <button
+              onclick={() => saveSerialMode("obrigatorio_todas")}
+              disabled={savingSerial}
+              class="inline-flex h-9 items-center border px-4 text-sm hover:bg-accent disabled:opacity-50"
+              class:border-primary={serial200Mode === "obrigatorio_todas"}
+              class:bg-accent={serial200Mode === "obrigatorio_todas"}
+              class:text-primary={serial200Mode === "obrigatorio_todas"}
+              class:font-semibold={serial200Mode === "obrigatorio_todas"}
+            >
+              Obrigatório em todas as contagens
+            </button>
+            <button
+              onclick={() => saveSerialMode("opcional_geral")}
+              disabled={savingSerial}
+              class="inline-flex h-9 items-center border px-4 text-sm hover:bg-accent disabled:opacity-50"
+              class:border-primary={serial200Mode === "opcional_geral"}
+              class:bg-accent={serial200Mode === "opcional_geral"}
+              class:text-primary={serial200Mode === "opcional_geral"}
+              class:font-semibold={serial200Mode === "opcional_geral"}
+            >
+              Opcional apenas na contagem geral
+            </button>
+            <button
+              onclick={() => saveSerialMode("opcional_todas")}
+              disabled={savingSerial}
+              class="inline-flex h-9 items-center border px-4 text-sm hover:bg-accent disabled:opacity-50"
+              class:border-primary={serial200Mode === "opcional_todas"}
+              class:bg-accent={serial200Mode === "opcional_todas"}
+              class:text-primary={serial200Mode === "opcional_todas"}
+              class:font-semibold={serial200Mode === "opcional_todas"}
+            >
+              Opcional em todas as contagens
+            </button>
+          </div>
+          <p class="mt-2 text-xs text-muted-foreground">
+            {serial200Mode === "obrigatorio_todas"
+              ? "Serial obrigatório para cada nota de R$ 200 em qualquer contagem."
+              : serial200Mode === "opcional_geral"
+                ? "Serial opcional na contagem Geral, mas obrigatório nas demais contagens."
+                : "Serial opcional em todas as contagens."}
+          </p>
+        </div>
+
+        <!-- Atualizacoes -->
+        <div class="border p-4">
+          <h2 class="text-sm font-semibold">Atualizacoes</h2>
+          <p class="mb-3 text-xs text-muted-foreground">
+            Verifica novas versoes no repositorio oficial (ReinaldoAssis/Neo-Caixa)
+          </p>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              onclick={checkUpdates}
+              disabled={updChecking || updDownloading || updApplying}
+              class="inline-flex h-9 items-center border px-4 text-sm hover:bg-accent disabled:opacity-50"
+            >
+              {updChecking ? "Checando..." : "Checar por atualizacoes"}
+            </button>
+
+            {#if updInfo?.update_available}
+              {#if !updDownloadedPath}
+                <button
+                  onclick={downloadUpdate}
+                  disabled={updDownloading}
+                  class="inline-flex h-9 items-center bg-primary px-4 text-sm text-primary-foreground hover:bg-primary-hover disabled:opacity-50"
+                >
+                  {updDownloading ? "Baixando..." : `Baixar versao ${updInfo.latest_version}`}
+                </button>
+              {:else}
+                <button
+                  onclick={installUpdate}
+                  disabled={updApplying}
+                  class="inline-flex h-9 items-center bg-primary px-4 text-sm text-primary-foreground hover:bg-primary-hover disabled:opacity-50"
+                >
+                  {updApplying ? "Instalando..." : "Instalar e reiniciar"}
+                </button>
+              {/if}
+            {/if}
+          </div>
+
+          {#if updInfo}
+            <div class="mt-3 text-xs">
+              <p class="text-muted-foreground">
+                Versao atual: <span class="font-medium text-foreground">{updInfo.current_version}</span>
+                {#if updInfo.latest_version}
+                  · Ultima versao: <span class="font-medium text-foreground">{updInfo.latest_version}</span>
+                {/if}
+              </p>
+              {#if updInfo.update_available}
+                <p class="mt-1 font-medium text-primary">Nova versao disponivel!</p>
+                {#if updInfo.release_notes}
+                  <pre class="mt-2 max-h-40 overflow-auto whitespace-pre-wrap border bg-muted/30 p-2 text-[11px] text-muted-foreground">{updInfo.release_notes}</pre>
+                {/if}
+              {/if}
+            </div>
+          {/if}
+
+          {#if updStatus}
+            <p class="mt-2 text-xs text-green-700">{updStatus}</p>
+          {/if}
+          {#if updError}
+            <p class="mt-2 text-xs text-red-600">{updError}</p>
+          {/if}
+        </div>
+      </div>
+      {:else}
+      <div class="space-y-4">
+        <h2 class="text-sm font-semibold">Grupos de conciliação (Posto)</h2>
+        <p class="text-xs text-muted-foreground">
+          Defina quais descricoes dos relatorios somam em cada grupo de conciliacao
+        </p>
         {#each grupos as grupo, gi}
           <div class="border">
             <div class="flex flex-wrap items-center gap-3 border-b bg-muted/40 px-4 py-2">
@@ -398,6 +650,7 @@
           + Adicionar grupo
         </button>
       </div>
+      {/if}
     {/if}
   </div>
 </div>

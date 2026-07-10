@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Settings } from "lucide-svelte";
   import Historico from "./Historico.svelte";
   import Importacao from "./Importacao.svelte";
   import Resultado from "./Resultado.svelte";
@@ -78,7 +79,7 @@
         Posto
       </button>
       <button
-        onclick={() => { activeTipo = "restaurante"; showConfig = false; }}
+        onclick={() => { activeTipo = "restaurante"; }}
         class="px-4 py-2.5 text-sm font-medium transition-colors"
         class:border-b-2={activeTipo === "restaurante"}
         class:border-primary={activeTipo === "restaurante"}
@@ -89,21 +90,20 @@
       </button>
     </div>
     <div class="ml-auto flex gap-2 px-4">
-      {#if activeTipo === "posto"}
-        <button
-          onclick={() => (showConfig = !showConfig)}
-          class="inline-flex h-8 items-center border px-3 text-sm hover:bg-accent"
-          class:bg-accent={showConfig}
-          class:text-primary={showConfig}
-        >
-          {showConfig ? "Voltar" : "Configuracoes"}
-        </button>
-      {/if}
+      <button
+        onclick={() => (showConfig = !showConfig)}
+        class="inline-flex h-8 w-8 items-center justify-center border hover:bg-accent"
+        class:bg-accent={showConfig}
+        class:text-primary={showConfig}
+        title={showConfig ? "Voltar" : "Configuracoes"}
+      >
+        <Settings class="h-4 w-4" />
+      </button>
     </div>
   </div>
 
-  <!-- Config view (posto) -->
-  {#if activeTipo === "posto" && showConfig}
+  <!-- Config view (posto + restaurante) -->
+  {#if showConfig}
     <ConfigPosto />
   {:else if activeTipo === "posto"}
     {#if postoView === "historico"}
@@ -119,6 +119,7 @@
         onVoltar={() => backToHistorico("posto")}
         onResultado={(c) => showResultado("posto", c)}
         onSalvo={() => backToHistorico("posto")}
+        onIdChange={(id) => (postoId = id)}
       />
     {:else if postoView === "resultado"}
       <Resultado
@@ -143,6 +144,7 @@
         onVoltar={() => backToHistorico("restaurante")}
         onResultado={(c) => showResultado("restaurante", c)}
         onSalvo={() => backToHistorico("restaurante")}
+        onIdChange={(id) => (restId = id)}
       />
     {:else if restView === "resultado"}
       <Resultado

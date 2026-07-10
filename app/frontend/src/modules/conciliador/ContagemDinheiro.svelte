@@ -4,12 +4,19 @@
     contagens: any[];
     onChange?: () => void;
     tabBehavior?: "icone" | "icone_fixo";
+    serialMode?: "obrigatorio_todas" | "opcional_geral" | "opcional_todas";
   }
 
-  let { readonly = false, contagens = $bindable([] as any[]), onChange, tabBehavior = "icone" }: Props = $props();
+  let { readonly = false, contagens = $bindable([] as any[]), onChange, tabBehavior = "icone", serialMode = "obrigatorio_todas" }: Props = $props();
 
   const denominations = [200, 100, 50, 20, 10, 5, 2];
   let activeTab = $state(0);
+
+  function serialRequired(contagem: any): boolean {
+    if (serialMode === "opcional_todas") return false;
+    if (serialMode === "opcional_geral") return contagem?.label !== "Geral";
+    return true;
+  }
 
   if (contagens.length === 0) {
     contagens = [{
@@ -269,7 +276,8 @@
       <div class="mt-2">
         <p class="mb-1 text-xs text-muted-foreground">
           {#if activeContagem.label !== "Geral" || activeContagem.editado}
-            Seriais das notas de R$ 200 ({activeContagem.seriais_200?.length || 0}):
+            Seriais das notas de R$ 200 ({activeContagem.seriais_200?.length || 0})
+            {serialRequired(activeContagem) ? "" : "(opcional)"}:
           {:else}
             Seriais somados de todas as contagens ({activeContagem.seriais_200?.length || 0}):
           {/if}

@@ -19,6 +19,7 @@ from app.modules.conciliador.parsers import (
     parse_pagbank_csv,
     parse_premmia_file,
     parse_restaurante_pagbank_csv,
+    parse_restaurante_pagbank_split,
 )
 from app.modules.conciliador.services import (
     totals_posto,
@@ -286,6 +287,23 @@ async def parser_pagbank_restaurante(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.post("/parser/pagbank-restaurante-split")
+async def parser_pagbank_restaurante_split(
+    file: UploadFile = File(...),
+    split_time: str = Query(...),
+):
+    content = await file.read()
+    try:
+        result = parse_restaurante_pagbank_split(
+            content,
+            file.filename or "pagbank.csv",
+            split_time=split_time,
+        )
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 # ─── Resultado (conferencia) ──────────────────────────────────────
 
 @router.post("/conciliacoes/{conciliacao_id}/resultado")
@@ -404,5 +422,6 @@ async def update_module_settings(data: dict):
 @router.post("/validar-contagens")
 async def validar_contagens(data: dict):
     contagens = data.get("contagens", [])
-    errors = validate_contagens(contagens)
+    settings = load_settings(app_context.database)
+    errors = validate_contagens(contagens, settings.get("serial_200_mode", "obrigatorio_todas"))
     return {"valid": len(errors) == 0, "errors": errors}

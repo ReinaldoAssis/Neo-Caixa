@@ -3,6 +3,8 @@ from pathlib import Path
 import os
 import sys
 
+from app.version import __version__
+
 
 def _user_data_dir() -> Path:
     app = "NeoCaixa"
@@ -25,8 +27,10 @@ _DATA_DIR = _resolve_data_dir()
 
 class Settings(BaseSettings):
     APP_NAME: str = "Neo Caixa"
-    VERSION: str = "0.1.0"
+    VERSION: str = __version__
     DEBUG: bool = False
+
+    GITHUB_REPO: str = "ReinaldoAssis/Neo-Caixa"
 
     HOST: str = "127.0.0.1"
     PORT: int = 8754
