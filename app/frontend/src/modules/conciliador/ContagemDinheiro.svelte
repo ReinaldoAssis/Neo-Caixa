@@ -55,6 +55,33 @@
     return `R$ ${formatted.replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
   }
 
+  function parseDecimal(v: any): number {
+    if (typeof v === "number") return isNaN(v) ? 0 : v;
+    if (v === null || v === undefined) return 0;
+    let s = String(v).trim().replace(/\s/g, "");
+    if (!s) return 0;
+    if (s.includes(",")) {
+      s = s.replace(/\./g, "").replace(",", ".");
+    }
+    const n = parseFloat(s);
+    return isNaN(n) ? 0 : Math.round(n * 100) / 100;
+  }
+
+  function sanitizeDecimal(v: string): string {
+    let s = v.replace(/[^\d,]/g, "");
+    const i = s.indexOf(",");
+    if (i !== -1) {
+      s = s.slice(0, i + 1) + s.slice(i + 1).replace(/,/g, "");
+    }
+    return s;
+  }
+
+  function decimalDisplay(v: any): string {
+    if (v === 0 || v === "0" || v === "" || v === null || v === undefined) return "";
+    if (typeof v === "number") return String(v).replace(".", ",");
+    return String(v);
+  }
+
   function recalculate(contagem: any) {
     const notas = contagem.notas || {};
     let total = 0;
@@ -62,8 +89,8 @@
       const qty = parseInt(notas[String(denom)] || "0") || 0;
       total += qty * denom;
     }
-    total += parseFloat(contagem.moedas || 0);
-    total += parseFloat(contagem.depositos || 0);
+    total += parseDecimal(contagem.moedas);
+    total += parseDecimal(contagem.depositos);
     contagem.total = Math.round(total * 100) / 100;
     syncSerials(contagem);
     refreshGeral();
@@ -93,8 +120,8 @@
       for (const d of denominations) {
         totalNotas[String(d)] = (totalNotas[String(d)] || 0) + (parseInt(c.notas?.[String(d)] || "0") || 0);
       }
-      totalMoedas += parseFloat(c.moedas || 0);
-      totalDepositos += parseFloat(c.depositos || 0);
+      totalMoedas += parseDecimal(c.moedas);
+      totalDepositos += parseDecimal(c.depositos);
       if (c.seriais_200) allSerials.push(...c.seriais_200.filter((s: string) => s));
     }
 
@@ -243,10 +270,12 @@
             <td class="py-0.5 pr-4">
               <input
                 type="text"
-                value={activeContagem.moedas || "0"}
-                oninput={(e) => { activeContagem.moedas = (e.target as HTMLInputElement).value; recalculate(activeContagem); }}
+                inputmode="decimal"
+                value={decimalDisplay(activeContagem.moedas)}
+                oninput={(e) => { const t = e.target as HTMLInputElement; const s = sanitizeDecimal(t.value); t.value = s; activeContagem.moedas = s; recalculate(activeContagem); }}
                 disabled={readonly || (activeContagem.label === "Geral" && !activeContagem.editado)}
-                class="w-16 border bg-background px-2 py-0.5 text-sm"
+                placeholder="0,00"
+                class="w-24 border bg-background px-2 py-0.5 text-sm"
               />
             </td>
             <td></td>
@@ -257,10 +286,12 @@
             <td class="py-0.5 pr-4">
               <input
                 type="text"
-                value={activeContagem.depositos || "0"}
-                oninput={(e) => { activeContagem.depositos = (e.target as HTMLInputElement).value; recalculate(activeContagem); }}
+                inputmode="decimal"
+                value={decimalDisplay(activeContagem.depositos)}
+                oninput={(e) => { const t = e.target as HTMLInputElement; const s = sanitizeDecimal(t.value); t.value = s; activeContagem.depositos = s; recalculate(activeContagem); }}
                 disabled={readonly || (activeContagem.label === "Geral" && !activeContagem.editado)}
-                class="w-16 border bg-background px-2 py-0.5 text-sm"
+                placeholder="0,00"
+                class="w-24 border bg-background px-2 py-0.5 text-sm"
               />
             </td>
             <td></td>

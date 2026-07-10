@@ -9,6 +9,7 @@ from app.modules.conciliador.constants import (
     DENOMINATIONS,
     normalize_categories_posto,
     normalize_categories_restaurante,
+    parse_money,
 )
 
 
@@ -180,8 +181,8 @@ def totals_restaurante(
 def compute_contagem_total(contagem: dict) -> float:
     notas = contagem.get("notas", {})
     total = sum(int(notas.get(str(d), 0) or 0) * d for d in DENOMINATIONS)
-    total += float(contagem.get("moedas", 0) or 0)
-    total += float(contagem.get("depositos", 0) or 0)
+    total += parse_money(contagem.get("moedas", 0))
+    total += parse_money(contagem.get("depositos", 0))
     return round(total, 2)
 
 
@@ -199,8 +200,8 @@ def consolidate_contagens(contagens: list[dict]) -> dict:
         notas = c.get("notas", {})
         for d in DENOMINATIONS:
             total_notes[str(d)] += int(notas.get(str(d), 0) or 0)
-        total_moedas += float(c.get("moedas", 0) or 0)
-        total_depositos += float(c.get("depositos", 0) or 0)
+        total_moedas += parse_money(c.get("moedas", 0))
+        total_depositos += parse_money(c.get("depositos", 0))
         all_serials.extend(c.get("seriais_200", []))
 
     grand = sum(total_notes[str(d)] * d for d in DENOMINATIONS) + total_moedas + total_depositos
