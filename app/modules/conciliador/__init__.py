@@ -103,8 +103,7 @@ def _normalize_restaurante(data: dict) -> dict:
     data["atualizado_em"] = now
     avulsos = data.get("lancamentos_avulsos") or []
     contagens = data.get("contagens_dinheiro") or []
-    geral = next((c for c in contagens if c.get("label") == "Geral"), None)
-    dinheiro_real = round(geral.get("total", 0) if geral else 0, 2)
+    dinheiro_real = _dinheiro_real_from_contagens(contagens)
     total_sistema, total_real, diferenca = totals_restaurante(
         data["categorias"], avulsos, dinheiro_real
     )
@@ -121,6 +120,19 @@ def _sanitize_for_response(doc: dict) -> dict:
     if "doc_id" in result:
         del result["doc_id"]
     return result
+
+
+def _dinheiro_real_from_contagens(contagens: list[dict]) -> float:
+    """Soma o total de todas as contagens 'Geral'.
+
+    Em caixa normal existe uma unica 'Geral'. Em caixa dividido (T1/T2)
+    as contagens de ambos os turnos sao mescladas, gerando duas 'Geral';
+    ambas devem somar no dinheiro real combinado.
+    """
+    gerais = [c for c in (contagens or []) if c.get("label") == "Geral"]
+    if not gerais:
+        return 0.0
+    return round(sum(float(c.get("total", 0) or 0) for c in gerais), 2)
 
 
 # ─── CRUD ────────────────────────────────────────────────────────
@@ -161,16 +173,40 @@ async def get_conciliacao(conciliacao_id: str):
     return doc
 
 
+def _normalize_contagem_avulsa(data: dict) -> dict:
+    """Contagem de dinheiro autonoma (nao vinculada a um caixa)."""
+    now = _now()
+    data.setdefault("id", str(uuid4()))
+    data.setdefault("status", "rascunho")
+    data["kind"] = "contagem"
+    data.setdefault("tipo", "posto")
+    data.setdefault("contagens_dinheiro", [])
+    data.setdefault("observacoes", "")
+    data.setdefault("criado_em", now)
+    data["atualizado_em"] = now
+    contagens = data.get("contagens_dinheiro") or []
+    total = _dinheiro_real_from_contagens(contagens)
+    data["total_sistema"] = 0.0
+    data["total_site"] = 0.0
+    data["total_real"] = total
+    data["diferenca_total"] = 0.0
+    data["dinheiro_real"] = total
+    return data
+
+
 @router.post("/conciliacoes")
 async def save_conciliacao(data: dict):
     tipo = data.get("tipo", "posto")
+    kind = data.get("kind")
     conciliacao_id = data.get("id") or data.get("_id")
 
     existing = None
     if conciliacao_id:
         existing = app_context.database.get(TABLE, str(conciliacao_id))
 
-    if tipo == "restaurante":
+    if kind == "contagem":
+        normalized = _normalize_contagem_avulsa(data)
+    elif tipo == "restaurante":
         normalized = _normalize_restaurante(data)
     else:
         normalized = _normalize_posto(data)
@@ -315,8 +351,7 @@ async def build_resultado(conciliacao_id: str):
 
     if tipo == "restaurante":
         from app.modules.conciliador.services import build_conciliation_rows_restaurante
-        geral = next((c for c in contagens if c.get("label") == "Geral"), None)
-        dinheiro_real = round(geral.get("total", 0) if geral else 0, 2)
+        dinheiro_real = _dinheiro_real_from_contagens(contagens)
         rows = build_conciliation_rows_restaurante(
             doc.get("categorias", {}), avulsos, dinheiro_real
         )

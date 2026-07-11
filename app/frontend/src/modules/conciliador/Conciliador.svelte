@@ -4,9 +4,10 @@
   import Importacao from "./Importacao.svelte";
   import Resultado from "./Resultado.svelte";
   import ConfigPosto from "./ConfigPosto.svelte";
+  import ContagemAvulsa from "./ContagemAvulsa.svelte";
 
   type Tipo = "posto" | "restaurante";
-  type View = "historico" | "importacao" | "resultado";
+  type View = "historico" | "importacao" | "resultado" | "contagem";
 
   let activeTipo = $state<Tipo>("posto");
   let showConfig = $state(false);
@@ -14,10 +15,15 @@
   let postoView = $state<View>("historico");
   let postoId = $state<string | null>(null);
   let postoConciliacao = $state<any>(null);
+  let postoContagemId = $state<string | null>(null);
 
   let restView = $state<View>("historico");
   let restId = $state<string | null>(null);
   let restConciliacao = $state<any>(null);
+  let restContagemId = $state<string | null>(null);
+
+  let postoReloadKey = $state(0);
+  let restReloadKey = $state(0);
 
   function showImportacao(t: Tipo, id: string | null = null) {
     if (t === "posto") {
@@ -28,6 +34,16 @@
       restView = "importacao";
       restId = id;
       restConciliacao = null;
+    }
+  }
+
+  function showContagem(t: Tipo, id: string | null = null) {
+    if (t === "posto") {
+      postoView = "contagem";
+      postoContagemId = id;
+    } else {
+      restView = "contagem";
+      restContagemId = id;
     }
   }
 
@@ -46,10 +62,12 @@
       postoView = "historico";
       postoId = null;
       postoConciliacao = null;
+      postoContagemId = null;
     } else {
       restView = "historico";
       restId = null;
       restConciliacao = null;
+      restContagemId = null;
     }
   }
 
@@ -57,9 +75,11 @@
     if (t === "posto") {
       postoConciliacao = c;
       postoView = "importacao";
+      postoReloadKey += 1;
     } else {
       restConciliacao = c;
       restView = "importacao";
+      restReloadKey += 1;
     }
   }
 </script>
@@ -111,6 +131,8 @@
         tipo="posto"
         onNovo={() => showImportacao("posto")}
         onAbrir={(id) => showImportacao("posto", id)}
+        onNovaContagem={() => showContagem("posto")}
+        onAbrirContagem={(id) => showContagem("posto", id)}
       />
     {:else if postoView === "importacao"}
       <Importacao
@@ -120,6 +142,14 @@
         onResultado={(c) => showResultado("posto", c)}
         onSalvo={() => backToHistorico("posto")}
         onIdChange={(id) => (postoId = id)}
+        reloadKey={postoReloadKey}
+      />
+    {:else if postoView === "contagem"}
+      <ContagemAvulsa
+        tipo="posto"
+        contagemId={postoContagemId}
+        onVoltar={() => backToHistorico("posto")}
+        onIdChange={(id) => (postoContagemId = id)}
       />
     {:else if postoView === "resultado"}
       <Resultado
@@ -136,6 +166,8 @@
         tipo="restaurante"
         onNovo={() => showImportacao("restaurante")}
         onAbrir={(id) => showImportacao("restaurante", id)}
+        onNovaContagem={() => showContagem("restaurante")}
+        onAbrirContagem={(id) => showContagem("restaurante", id)}
       />
     {:else if restView === "importacao"}
       <Importacao
@@ -145,6 +177,14 @@
         onResultado={(c) => showResultado("restaurante", c)}
         onSalvo={() => backToHistorico("restaurante")}
         onIdChange={(id) => (restId = id)}
+        reloadKey={restReloadKey}
+      />
+    {:else if restView === "contagem"}
+      <ContagemAvulsa
+        tipo="restaurante"
+        contagemId={restContagemId}
+        onVoltar={() => backToHistorico("restaurante")}
+        onIdChange={(id) => (restContagemId = id)}
       />
     {:else if restView === "resultado"}
       <Resultado

@@ -10,9 +10,10 @@
     onResultado: (c: any) => void;
     onSalvo: () => void;
     onIdChange?: (id: string) => void;
+    reloadKey?: number;
   }
 
-  let { tipo, conciliacaoId, onVoltar, onResultado, onSalvo, onIdChange }: Props = $props();
+  let { tipo, conciliacaoId, onVoltar, onResultado, onSalvo, onIdChange, reloadKey = 0 }: Props = $props();
 
   let postoCategories = $state<string[]>([
     "PREMMIA_CARTAO", "PREMMIA_PIX", "PREMMIA_VALE", "PREMMIA_CUPOM",
@@ -121,6 +122,15 @@
   let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
   let autosaving = $state(false);
   let lastSavedAt = $state("");
+  let savingInFlight = false;
+  let toastMessage = $state("");
+  let toastTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function showToast(msg: string) {
+    toastMessage = msg;
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toastMessage = ""), 2500);
+  }
 
   // Time range modal for restaurante
   let showTimeModal = $state(false);
@@ -181,6 +191,20 @@
       await loadConciliacao(conciliacaoId);
     }
     hydrated = true;
+  });
+
+  let lastReloadKey = 0;
+  $effect(() => {
+    const key = reloadKey;
+    if (!hydrated) return;
+    if (key === lastReloadKey) return;
+    lastReloadKey = key;
+    const id = savedId || conciliacaoId;
+    if (id) {
+      // Cancel any pending stale autosave before reloading fresh data.
+      if (autosaveTimer) clearTimeout(autosaveTimer);
+      loadConciliacao(id);
+    }
   });
 
   function initCategories() {
@@ -610,22 +634,12 @@
 
   async function saveDraft() {
     loading = true;
-    const payload = buildPayload("rascunho");
-    try {
-      const method = savedId ? "POST" : "POST";
-      const res = await fetch("/api/conciliador/conciliacoes", {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error("Erro ao salvar");
-      const result = await res.json();
-      savedId = result.id;
-      onSalvo();
-    } catch (e: any) {
-      errorMessage = e.message;
-    } finally {
-      loading = false;
+    const id = await persistNow();
+    loading = false;
+    if (id) {
+      showToast("Rascunho salvo com sucesso.");
+    } else {
+      errorMessage = "Erro ao salvar rascunho.";
     }
   }
 
@@ -730,6 +744,8 @@
 
   async function persistNow(): Promise<string | null> {
     if (readonly) return savedId;
+    if (savingInFlight) return savedId;
+    savingInFlight = true;
     autosaving = true;
     try {
       const payload = buildPayload("rascunho");
@@ -750,6 +766,7 @@
       // silent - autosave is best-effort
     } finally {
       autosaving = false;
+      savingInFlight = false;
     }
     return savedId;
   }
@@ -757,7 +774,7 @@
   function scheduleAutosave() {
     if (!hydrated || readonly) return;
     if (autosaveTimer) clearTimeout(autosaveTimer);
-    autosaveTimer = setTimeout(() => { persistNow(); }, 800);
+    autosaveTimer = setTimeout(() => { if (!savingInFlight) persistNow(); }, 800);
   }
 
   $effect(() => {
@@ -822,6 +839,12 @@
   {#if loading}
     <div class="mx-4 mt-2 h-1 w-full overflow-hidden rounded bg-muted">
       <div class="h-full w-1/3 animate-progress rounded bg-primary"></div>
+    </div>
+  {/if}
+
+  {#if toastMessage}
+    <div class="toast-in fixed bottom-6 right-6 z-50 rounded-md bg-green-600 px-4 py-2 text-sm text-white shadow-lg">
+      {toastMessage}
     </div>
   {/if}
 

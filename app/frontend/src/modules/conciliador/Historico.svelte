@@ -1,14 +1,17 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { Calculator } from "lucide-svelte";
   import Select from "./Select.svelte";
 
   interface Props {
     tipo: "posto" | "restaurante";
     onNovo: () => void;
     onAbrir: (id: string) => void;
+    onNovaContagem: () => void;
+    onAbrirContagem: (id: string) => void;
   }
 
-  let { tipo, onNovo, onAbrir }: Props = $props();
+  let { tipo, onNovo, onAbrir, onNovaContagem, onAbrirContagem }: Props = $props();
 
   let conciliacoes = $state<any[]>([]);
   let search = $state("");
@@ -86,7 +89,11 @@
       return;
     }
     const id = item._id || item.id || item.doc_id;
-    onAbrir(String(id));
+    if (item.kind === "contagem") {
+      onAbrirContagem(String(id));
+    } else {
+      onAbrir(String(id));
+    }
   }
 </script>
 
@@ -100,6 +107,13 @@
       class="ml-auto inline-flex h-8 items-center rounded-md bg-primary px-3 text-sm text-primary-foreground hover:bg-primary/90"
     >
       + Novo
+    </button>
+    <button
+      onclick={onNovaContagem}
+      class="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-accent"
+      title="Nova contagem de dinheiro (sem caixa)"
+    >
+      <Calculator class="h-4 w-4" />
     </button>
   </div>
 
@@ -158,9 +172,14 @@
               class:text-muted-foreground={isArchived}
               ondblclick={() => openItem(item)}
             >
-              <td class="px-4 py-2">{formatDate(item.data)}</td>
+              <td class="px-4 py-2">
+                {formatDate(item.data)}
+                {#if item.kind === "contagem"}
+                  <span class="ml-2 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">contagem</span>
+                {/if}
+              </td>
               {#if tipo === "restaurante"}
-                <td class="px-4 py-2">{turnoStr(item.turno)}</td>
+                <td class="px-4 py-2">{item.kind === "contagem" ? "-" : turnoStr(item.turno)}</td>
               {/if}
               <td class="px-4 py-2 text-right">{formatMoney(item.total_sistema)}</td>
               <td class="px-4 py-2 text-right">

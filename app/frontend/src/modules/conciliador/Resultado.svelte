@@ -112,7 +112,7 @@
       const store = turnos[String(n)] || { categorias: {}, contagens: [], avulsos: [] };
       const geral = (store.contagens || []).find((c: any) => c.label === "Geral");
       const dinheiroReal = geral?.total || 0;
-      const avulsosTurno = lancamentosAvulsos.filter((a) => (a.turno ?? null) === n);
+      const avulsosTurno = lancamentosAvulsos.filter((a) => Number(a.turno) === n);
       const r = buildRestRowsFor(store.categorias || {}, avulsosTurno, dinheiroReal);
       const totalDiff = Math.round(r.reduce((s, row) => s + (row.diferenca || 0), 0) * 100) / 100;
       return { turno: n, rows: r, totalDiff };
@@ -174,8 +174,9 @@
         despesas: caixa.despesas || 0,
       };
     } else {
-      const geral = contagens.find((c: any) => c.label === "Geral");
-      const dinheiroReal = geral?.total || 0;
+      const dinheiroReal = contagens
+        .filter((c: any) => c.label === "Geral")
+        .reduce((s: number, c: any) => s + (c.total || 0), 0);
       for (const key of restCategories) {
         const v = cats[key] || { sistema: 0, real: 0 };
         let sistema = v.sistema || 0;
@@ -252,7 +253,7 @@
       coluna: avulsoColuna,
       categoria_vinculada,
       categoria_nova,
-      turno: isSplit ? avulsoTurno : null,
+      turno: isSplit ? Number(avulsoTurno) : null,
     }];
     avulsoDesc = "";
     avulsoValor = "";
@@ -278,7 +279,18 @@
   const totalDiff = $derived(rows.reduce((sum: number, r: any) => sum + (r.diferenca || 0), 0));
 
   async function save() {
-    const payload = { ...caixa, lancamentos_avulsos: lancamentosAvulsos };
+    let payload: any = { ...caixa, lancamentos_avulsos: lancamentosAvulsos };
+    if (isSplit && payload.turnos) {
+      // Reflete os avulsos (com tag de turno) de volta em cada turno para
+      // manter o caixa consistente ao reabrir a importacao.
+      const turnos = { ...payload.turnos };
+      for (const n of [1, 2]) {
+        const store = { ...(turnos[String(n)] || { categorias: {}, contagens: [], avulsos: [] }) };
+        store.avulsos = lancamentosAvulsos.filter((a) => (a.turno ?? null) === n);
+        turnos[String(n)] = store;
+      }
+      payload.turnos = turnos;
+    }
     let id = caixaId;
     if (!id) {
       const res = await fetch("/api/conciliador/conciliacoes", {
