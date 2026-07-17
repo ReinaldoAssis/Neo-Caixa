@@ -244,7 +244,11 @@
         sangria = doc.sangria || 0;
         notasPrazo = doc.notas_a_prazo || 0;
         despesas = doc.despesas || 0;
+        statusCaixa = doc.status_caixa || "";
+        statusPagbank = doc.status_pagbank || "";
+        statusPremmia = doc.status_premmia || "";
         initPostoSistemaVars();
+        handleContagemChange();
       } else {
         if (doc.split_mode && doc.turnos) {
           splitMode = true;
@@ -371,7 +375,10 @@
       const result = await uploadFile("/parser/pagbank", file);
       statusPagbank = `${result.registros_aprovados} registros aprovados`;
       for (const key of postoCategories) {
-        categorias[key].site = result.categorias?.[key]?.site || 0;
+        const isSangria = key === "SANGRIA" || (postoLabels[key] || "").toUpperCase() === "SANGRIA";
+        if (!isSangria) {
+          categorias[key].site = result.categorias?.[key]?.site || 0;
+        }
       }
     } catch (e: any) {
       errorMessage = e.message;
@@ -390,7 +397,8 @@
       statusPremmia = `Formato ${result.formato}. ${result.transacoes_processadas} transacoes`;
       premmiaLancamentos = result.lancamentos || [];
       for (const key of postoCategories) {
-        if (result.categorias?.[key]?.site) {
+        const isSangria = key === "SANGRIA" || (postoLabels[key] || "").toUpperCase() === "SANGRIA";
+        if (!isSangria && result.categorias?.[key]?.site) {
           categorias[key].site = (categorias[key].site || 0) + result.categorias[key].site;
         }
       }
@@ -597,12 +605,65 @@
     return Math.round(sistema * 100) / 100;
   }
 
+  function getPostoDiff(key: string): number {
+    const site = getPostoSiteWithAvulsos(key);
+    const sistema = getPostoSistemaWithAvulsos(key);
+    return Math.round((site - sistema) * 100) / 100;
+  }
+
+  function getPostoSiteWithAvulsos(key: string): number {
+    let site = categorias[key]?.site || 0;
+    for (const av of lancamentosAvulsos) {
+      if (av.categoria_vinculada === key && av.coluna === "site") {
+        const delta = av.tipo === "RECEITA" ? av.valor : -av.valor;
+        site += delta;
+      }
+    }
+    return Math.round(site * 100) / 100;
+  }
+
+  function getPostoSistemaWithAvulsos(key: string): number {
+    let sistema = categorias[key]?.sistema || 0;
+    for (const av of lancamentosAvulsos) {
+      if (av.categoria_vinculada === key && av.coluna !== "site") {
+        const delta = av.tipo === "RECEITA" ? av.valor : -av.valor;
+        sistema += delta;
+      }
+    }
+    return Math.round(sistema * 100) / 100;
+  }
+
+  function getPostoTotalDiff(): number {
+    let total = 0;
+    for (const key of postoCategories) {
+      total += getPostoDiff(key);
+    }
+    return Math.round(total * 100) / 100;
+  }
+
+  function handlePostoSistemaChange(key: string, e: Event) {
+    sistemaVars[key] = (e.target as HTMLInputElement).value;
+    const val = parseMoney(sistemaVars[key]);
+    categorias[key] = { ...categorias[key], sistema: val, site: categorias[key].site };
+    categorias = categorias;
+  }
+
   function handleContagemChange() {
     if (tipo === "restaurante") {
       const geral = contagensDinheiro.find((c: any) => c.label === "Geral");
       const dinheiroReal = geral?.total || 0;
       categorias["DINHEIRO"] = { ...categorias["DINHEIRO"], sistema: categorias["DINHEIRO"].sistema, real: dinheiroReal };
       categorias = categorias;
+    } else {
+      const geral = contagensDinheiro.find((c: any) => c.label === "Geral");
+      const cashTotal = geral?.total || 0;
+      for (const key of postoCategories) {
+        if (key === "SANGRIA" || postoLabels[key]?.toUpperCase() === "SANGRIA") {
+          categorias[key] = { ...categorias[key], sistema: categorias[key].sistema, site: cashTotal };
+          categorias = categorias;
+          break;
+        }
+      }
     }
   }
 
@@ -755,6 +816,9 @@
       base.notas_a_prazo = notasPrazo;
       base.despesas = despesas;
       base.premmia_lancamentos = premmiaLancamentos;
+      base.status_caixa = statusCaixa;
+      base.status_pagbank = statusPagbank;
+      base.status_premmia = statusPremmia;
     } else if (splitMode) {
       snapshotActiveTurno();
       base.turno = null;
@@ -1048,7 +1112,7 @@
           </label>
           <button
             disabled={readonly}
-            onclick={() => { statusPagbank = "Nenhum arquivo importado"; for (const k of postoCategories) categorias[k].site = 0; }}
+            onclick={() => { statusPagbank = "Nenhum arquivo importado"; for (const k of postoCategories) { const isSangria = k === "SANGRIA" || (postoLabels[k] || "").toUpperCase() === "SANGRIA"; if (!isSangria) categorias[k].site = 0; } }}
             class="inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-accent"
           >
             Remover
@@ -1082,7 +1146,7 @@
           </label>
           <button
             disabled={readonly}
-            onclick={() => { statusPremmia = "Nenhum arquivo importado"; premmiaLancamentos = []; for (const k of postoCategories) categorias[k].site = 0; }}
+            onclick={() => { statusPremmia = "Nenhum arquivo importado"; premmiaLancamentos = []; for (const k of postoCategories) { const isSangria = k === "SANGRIA" || (postoLabels[k] || "").toUpperCase() === "SANGRIA"; if (!isSangria) categorias[k].site = 0; } }}
             class="inline-flex h-8 items-center border px-3 text-sm hover:bg-accent"
           >
             Remover
@@ -1090,47 +1154,109 @@
         </div>
 
         {#if premmiaLancamentos.length > 0}
+          {@const premmiaKeys = ["PREMMIA_CARTAO", "PREMMIA_PIX", "PREMMIA_VALE", "PREMMIA_CUPOM"]}
+          {@const grouped = premmiaKeys.reduce((acc: Record<string, any[]>, k: string) => {
+            acc[k] = premmiaLancamentos
+              .filter((l: any) => l.categoria === k && l.aceito)
+              .sort((a: any, b: any) => (a.data_hora || "").localeCompare(b.data_hora || ""));
+            return acc;
+          }, {} as Record<string, any[]>)}
+          {@const maxRows = Math.max(...premmiaKeys.map(k => grouped[k].length), 0)}
           <div class="mt-3 max-h-72 overflow-auto border">
             <table class="w-full text-xs">
               <thead class="sticky top-0 bg-muted">
                 <tr class="text-left">
-                  <th class="px-2 py-1.5">Data/Hora</th>
-                  <th class="px-2 py-1.5">Nome</th>
-                  <th class="px-2 py-1.5">CPF</th>
-                  <th class="px-2 py-1.5">Forma</th>
-                  <th class="px-2 py-1.5">Categoria</th>
-                  <th class="px-2 py-1.5 text-right">Valor</th>
+                  {#each premmiaKeys as key}
+                    <th class="px-2 py-1.5">{postoLabels[key] || key}</th>
+                  {/each}
                 </tr>
               </thead>
               <tbody>
-                {#each premmiaLancamentos as lanc}
-                  <tr class="border-t" class:text-muted-foreground={!lanc.aceito}>
-                    <td class="px-2 py-1">{lanc.data_hora}</td>
-                    <td class="px-2 py-1">{lanc.nome}</td>
-                    <td class="px-2 py-1">{lanc.cpf}</td>
-                    <td class="px-2 py-1">{lanc.forma}</td>
-                    <td class="px-2 py-1">
-                      {#if lanc.aceito}
-                        <span class="text-primary">{postoLabels[lanc.categoria] || lanc.categoria}</span>
-                      {:else}
-                        <span class="text-red-500">ignorado ({lanc.status})</span>
-                      {/if}
-                    </td>
-                    <td class="px-2 py-1 text-right tabular-nums">{formatMoney(lanc.valor)}</td>
+                {#each Array(maxRows) as _, rowIdx}
+                  <tr class="border-t">
+                    {#each premmiaKeys as key}
+                      {@const item = grouped[key][rowIdx]}
+                      <td class="px-2 py-1 text-right tabular-nums">
+                        {#if item}
+                          {formatMoney(item.valor)}
+                        {:else}
+                          <span class="text-muted-foreground">-</span>
+                        {/if}
+                      </td>
+                    {/each}
                   </tr>
                 {/each}
               </tbody>
               <tfoot class="sticky bottom-0 bg-muted font-semibold">
                 <tr class="border-t">
-                  <td class="px-2 py-1.5" colspan="5">Total ({premmiaLancamentos.length} lancamentos)</td>
-                  <td class="px-2 py-1.5 text-right tabular-nums">
-                    {formatMoney(premmiaLancamentos.reduce((s, l) => s + (l.aceito ? l.valor : 0), 0))}
-                  </td>
+                  {#each premmiaKeys as key}
+                    {@const total = grouped[key].reduce((s: number, l: any) => s + l.valor, 0)}
+                    <td class="px-2 py-1.5 text-right tabular-nums">{formatMoney(total)}</td>
+                  {/each}
+                </tr>
+                <tr class="border-t text-[10px] text-muted-foreground">
+                  {#each premmiaKeys as key}
+                    <td class="px-2 py-1.5 text-right">{grouped[key].length} lanc.</td>
+                  {/each}
                 </tr>
               </tfoot>
             </table>
           </div>
         {/if}
+      </div>
+
+      <!-- Posto: Conciliacao (secao C) -->
+      <div class="mb-4 rounded-lg border p-4">
+        <h3 class="mb-3 text-sm font-semibold">F - Conciliacao (Sistema = manual/editavel, Site = relatorios)</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b text-left">
+                <th class="pb-2 pr-4">Categoria</th>
+                <th class="pb-2 pr-4">Sistema (R$)</th>
+                <th class="pb-2 pr-4">Site (R$)</th>
+                <th class="pb-2">Diferenca (R$)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each postoCategories as key}
+                {@const siteVal = getPostoSiteWithAvulsos(key)}
+                {@const sistemaVal = getPostoSistemaWithAvulsos(key)}
+                {@const diffVal = getPostoDiff(key)}
+                <tr class="border-b">
+                  <td class="py-2 pr-4">{postoLabels[key] || key}</td>
+                  <td class="py-2 pr-4">
+                    <input
+                      type="text"
+                      value={sistemaVars[key] || ""}
+                      oninput={(e) => handlePostoSistemaChange(key, e)}
+                      onkeydown={(e) => { if (e.key==='Enter') { e.preventDefault(); const t=e.target as HTMLInputElement; const evaled=evalExpression(t.value); if (evaled!==t.value) { t.value=evaled; handlePostoSistemaChange(key, {target:t} as any); } } }}
+                      disabled={readonly}
+                      placeholder="0,00"
+                      class="w-28 rounded-md border px-2 py-1 text-sm"
+                    />
+                  </td>
+                  <td class="py-2 pr-4">{formatMoney(siteVal)}</td>
+                  <td class="py-2">
+                    <span class={Math.abs(diffVal) < 0.005 ? "text-green-600" : diffVal >= 0 ? "text-primary" : "text-red-600"}>
+                      {formatMoney(diffVal)}
+                    </span>
+                  </td>
+                </tr>
+              {/each}
+              <tr class="font-bold">
+                <td class="pt-3 text-right">Diferenca (Site - Sistema):</td>
+                <td class="pt-3"></td>
+                <td class="pt-3"></td>
+                <td class="pt-3">
+                  <span class={Math.abs(getPostoTotalDiff()) < 0.005 ? "text-green-600" : getPostoTotalDiff() >= 0 ? "text-primary" : "text-red-600"}>
+                    {formatMoney(getPostoTotalDiff())}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     {:else}
       <!-- Restaurante: PagBank CSV -->

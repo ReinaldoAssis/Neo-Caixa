@@ -92,6 +92,7 @@
     contagem.total = Math.round(total * 100) / 100;
     syncSerials(contagem);
     refreshGeral();
+    contagens = [...contagens];
     if (onChange) onChange();
   }
 

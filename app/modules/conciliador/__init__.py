@@ -77,15 +77,27 @@ def _normalize_posto(data: dict) -> dict:
     data.setdefault("contagens_dinheiro", [])
     data.setdefault("lancamentos_avulsos", [])
     data.setdefault("premmia_lancamentos", [])
+    data.setdefault("status_caixa", "")
+    data.setdefault("status_pagbank", "")
+    data.setdefault("status_premmia", "")
     data.setdefault("observacoes", "")
     data.setdefault("dinheiro_notas", 0.0)
     data.setdefault("dinheiro_moedas", 0.0)
     data.setdefault("criado_em", now)
     data["atualizado_em"] = now
     avulsos = data.get("lancamentos_avulsos") or []
-    total_sistema, total_site, diferenca = totals_posto(data["categorias"], avulsos, keys, labels)
     contagens = data.get("contagens_dinheiro") or []
     data["dinheiro_notas"], data["dinheiro_moedas"] = _dinheiro_breakdown(contagens)
+
+    cash_total = _dinheiro_real_from_contagens(contagens)
+    for key in data["categorias"]:
+        if key == "SANGRIA" or labels.get(key, "").upper() == "SANGRIA":
+            data["categorias"][key]["site"] = round(cash_total, 2)
+            break
+
+    total_sistema, total_site, diferenca = totals_posto(
+        data["categorias"], avulsos, keys, labels
+    )
     data["total_sistema"] = total_sistema
     data["total_site"] = total_site
     data["diferenca_total"] = diferenca

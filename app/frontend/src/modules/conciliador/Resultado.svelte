@@ -144,10 +144,16 @@
     const contagens = caixa.contagens_dinheiro || [];
 
     if (tipo === "posto") {
+      const geral = contagens.find((c: any) => c.label === "Geral");
+      const cashTotal = geral?.total || 0;
+
       for (const key of postoCategories) {
         const v = cats[key] || { sistema: 0, site: 0 };
         let sistema = v.sistema || 0;
         let site = v.site || 0;
+        if (key === "SANGRIA" || (postoLabels[key] || "").toUpperCase() === "SANGRIA") {
+          site = cashTotal;
+        }
         for (const av of avulsos) {
           if (av.categoria_vinculada === key) {
             const delta = av.tipo === "RECEITA" ? av.valor : -av.valor;
