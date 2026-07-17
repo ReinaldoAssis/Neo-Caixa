@@ -25,8 +25,8 @@
       editado: false,
       notas: Object.fromEntries(denominations.map(d => [String(d), 0])),
       seriais_200: [] as string[],
-      moedas: 0,
-      depositos: 0,
+      moedas: "",
+      depositos: "",
       total: 0,
     }];
   }
@@ -58,28 +58,26 @@
   function parseDecimal(v: any): number {
     if (typeof v === "number") return isNaN(v) ? 0 : v;
     if (v === null || v === undefined) return 0;
-    let s = String(v).trim().replace(/\s/g, "");
+    let s = String(v).trim();
     if (!s) return 0;
-    if (s.includes(",")) {
-      s = s.replace(/\./g, "").replace(",", ".");
-    }
+    if (s.includes(",")) s = s.replace(/\./g, "").replace(",", ".");
     const n = parseFloat(s);
     return isNaN(n) ? 0 : Math.round(n * 100) / 100;
+  }
+
+  function evalExpr(v: string): string {
+    const m = v.match(/^([\d,.]+)\s*([+\-])\s*([\d,.]+)$/);
+    if (!m) return v;
+    const a = parseDecimal(m[1]), b = parseDecimal(m[3]);
+    const r = m[2] === "+" ? a + b : a - b;
+    return String(Math.round(r * 100) / 100).replace(".", ",");
   }
 
   function sanitizeDecimal(v: string): string {
     let s = v.replace(/[^\d,]/g, "");
     const i = s.indexOf(",");
-    if (i !== -1) {
-      s = s.slice(0, i + 1) + s.slice(i + 1).replace(/,/g, "");
-    }
+    if (i !== -1) s = s.slice(0, i + 1) + s.slice(i + 1).replace(/,/g, "");
     return s;
-  }
-
-  function decimalDisplay(v: any): string {
-    if (v === 0 || v === "0" || v === "" || v === null || v === undefined) return "";
-    if (typeof v === "number") return String(v).replace(".", ",");
-    return String(v);
   }
 
   function recalculate(contagem: any) {
@@ -94,7 +92,6 @@
     contagem.total = Math.round(total * 100) / 100;
     syncSerials(contagem);
     refreshGeral();
-    contagens = contagens;
     if (onChange) onChange();
   }
 
@@ -144,8 +141,8 @@
       label: nextLabel(),
       notas: Object.fromEntries(denominations.map(d => [String(d), 0])),
       seriais_200: [] as string[],
-      moedas: 0,
-      depositos: 0,
+      moedas: "",
+      depositos: "",
       total: 0,
     };
     contagens = [...contagens, c];
@@ -272,8 +269,9 @@
               <input
                 type="text"
                 inputmode="decimal"
-                value={decimalDisplay(activeContagem.moedas)}
-                oninput={(e) => { const t = e.target as HTMLInputElement; const s = sanitizeDecimal(t.value); t.value = s; activeContagem.moedas = s; recalculate(activeContagem); }}
+                value={activeContagem.moedas || ""}
+                oninput={(e) => { const t = e.target as HTMLInputElement; const v = sanitizeDecimal(t.value); activeContagem.moedas = v; recalculate(activeContagem); }}
+                onkeydown={(e) => { if (e.key !== "Enter") return; e.preventDefault(); const t = e.target as HTMLInputElement; const r = evalExpr(t.value); if (r !== t.value) { t.value = r; activeContagem.moedas = sanitizeDecimal(r); recalculate(activeContagem); } }}
                 disabled={readonly || (activeContagem.label === "Geral" && !activeContagem.editado)}
                 placeholder="0,00"
                 class="w-24 border bg-background px-2 py-0.5 text-sm"
@@ -288,8 +286,9 @@
               <input
                 type="text"
                 inputmode="decimal"
-                value={decimalDisplay(activeContagem.depositos)}
-                oninput={(e) => { const t = e.target as HTMLInputElement; const s = sanitizeDecimal(t.value); t.value = s; activeContagem.depositos = s; recalculate(activeContagem); }}
+                value={activeContagem.depositos || ""}
+                oninput={(e) => { const t = e.target as HTMLInputElement; const v = sanitizeDecimal(t.value); activeContagem.depositos = v; recalculate(activeContagem); }}
+                onkeydown={(e) => { if (e.key !== "Enter") return; e.preventDefault(); const t = e.target as HTMLInputElement; const r = evalExpr(t.value); if (r !== t.value) { t.value = r; activeContagem.depositos = sanitizeDecimal(r); recalculate(activeContagem); } }}
                 disabled={readonly || (activeContagem.label === "Geral" && !activeContagem.editado)}
                 placeholder="0,00"
                 class="w-24 border bg-background px-2 py-0.5 text-sm"

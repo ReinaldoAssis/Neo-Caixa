@@ -62,7 +62,7 @@ def build_conciliation_rows_posto(
         sistema = round(float(values.get("sistema", 0) or 0), 2)
         site = round(float(values.get("site", 0) or 0), 2)
         sistema, site = _apply_avulsos_posto(sistema, site, avulsos or [], key)
-        diff = round(sistema - site, 2)
+        diff = round(site - sistema, 2)
         rows.append({
             "key": key,
             "label": labels.get(key, key),
@@ -84,7 +84,7 @@ def build_conciliation_rows_posto(
                 "label": label,
                 "sistema": sistema_new,
                 "site": site_new,
-                "diferenca": round(sistema_new - site_new, 2),
+                "diferenca": round(site_new - sistema_new, 2),
                 "status": "OK" if abs(sistema_new - site_new) < 0.005 else "DIVERGENTE",
             })
     return rows
@@ -99,7 +99,7 @@ def totals_posto(
     rows = build_conciliation_rows_posto(categorias, avulsos, keys, labels)
     sistema = round(sum(float(row["sistema"]) for row in rows), 2)
     site = round(sum(float(row["site"]) for row in rows), 2)
-    return sistema, site, round(sistema - site, 2)
+    return sistema, site, round(site - sistema, 2)
 
 
 # ─── Restaurante ──────────────────────────────────────────────────
@@ -135,7 +135,7 @@ def build_conciliation_rows_restaurante(
         if key == "DINHEIRO":
             real = round(dinheiro_real, 2)
         sistema, real = _apply_avulsos_restaurante(sistema, real, avulsos or [], key)
-        diff = round(sistema - real, 2)
+        diff = round(real - sistema, 2)
         rows.append({
             "key": key,
             "label": CATEGORIAS_RESTAURANTE_LABELS[key],
@@ -159,7 +159,7 @@ def build_conciliation_rows_restaurante(
                 "classificacao": "",
                 "sistema": sistema_new,
                 "real": real_new,
-                "diferenca": round(sistema_new - real_new, 2),
+                "diferenca": round(real_new - sistema_new, 2),
                 "status": "OK" if abs(sistema_new - real_new) < 0.005 else "DIVERGENTE",
             })
     return rows
@@ -173,7 +173,7 @@ def totals_restaurante(
     rows = build_conciliation_rows_restaurante(categorias, avulsos, dinheiro_real)
     sistema = round(sum(float(row["sistema"]) for row in rows), 2)
     real = round(sum(float(row["real"]) for row in rows), 2)
-    return sistema, real, round(sistema - real, 2)
+    return sistema, real, round(real - sistema, 2)
 
 
 # ─── Contagem de Dinheiro ────────────────────────────────────────

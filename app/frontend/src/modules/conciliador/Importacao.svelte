@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { ArrowLeft } from "lucide-svelte";
+
   import { onMount } from "svelte";
   import ContagemDinheiro from "./ContagemDinheiro.svelte";
   import Select from "./Select.svelte";
@@ -285,12 +287,32 @@
   function parseMoney(text: string): number {
     if (!text || !text.trim()) return 0;
     let cleaned = text.replace("R$", "").replace(/\s/g, "").trim();
+    cleaned = evalExpression(cleaned);
     cleaned = cleaned.replace(/[^\d,.\-]/g, "");
     if (cleaned.includes(",")) {
       cleaned = cleaned.replace(/\./g, "").replace(",", ".");
     }
     const val = parseFloat(cleaned);
     return isNaN(val) ? 0 : Math.round(val * 100) / 100;
+  }
+
+  function evalExpression(text: string): string {
+    // Detect arithmetic expression: number op number  (e.g. "10,5+11,45")
+    const match = text.match(/^([\d,.]+)\s*([+\-])\s*([\d,.]+)$/);
+    if (!match) return text;
+    const a = parseMoneyNum(match[1]);
+    const op = match[2];
+    const b = parseMoneyNum(match[3]);
+    if (isNaN(a) || isNaN(b)) return text;
+    const result = op === "+" ? a + b : a - b;
+    return String(Math.round(result * 100) / 100).replace(".", ",");
+  }
+
+  function parseMoneyNum(s: string): number {
+    let cleaned = s.replace(/\s/g, "").trim();
+    if (cleaned.includes(",")) cleaned = cleaned.replace(/\./g, "").replace(",", ".");
+    const val = parseFloat(cleaned);
+    return isNaN(val) ? NaN : val;
   }
 
   function formatMoney(value: number): string {
@@ -553,6 +575,28 @@
     return Math.round(total * 100) / 100;
   }
 
+  function getRestRealWithAvulsos(key: string): number {
+    let real = categorias[key]?.real || 0;
+    for (const av of lancamentosAvulsos) {
+      if (av.categoria_vinculada === key && av.coluna === "real") {
+        const delta = av.tipo === "RECEITA" ? av.valor : -av.valor;
+        real += delta;
+      }
+    }
+    return Math.round(real * 100) / 100;
+  }
+
+  function getRestSistemaWithAvulsos(key: string): number {
+    let sistema = categorias[key]?.sistema || 0;
+    for (const av of lancamentosAvulsos) {
+      if (av.categoria_vinculada === key && av.coluna !== "real") {
+        const delta = av.tipo === "RECEITA" ? av.valor : -av.valor;
+        sistema += delta;
+      }
+    }
+    return Math.round(sistema * 100) / 100;
+  }
+
   function handleContagemChange() {
     if (tipo === "restaurante") {
       const geral = contagensDinheiro.find((c: any) => c.label === "Geral");
@@ -802,9 +846,10 @@
   <div class="flex items-center gap-3 border-b px-4 py-3">
     <button
       onclick={onVoltar}
-      class="inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-accent"
+      class="inline-flex h-8 w-8 items-center justify-center border hover:bg-accent"
+      title="Voltar ao Historico"
     >
-      Voltar ao Historico
+      <ArrowLeft class="h-4 w-4" />
     </button>
     <h1 class="text-lg font-semibold">
       {readonly ? "Caixa Conciliado" : "Caixa em Edicao"} - {tipo === "posto" ? "Posto" : "Restaurante"}
@@ -1019,6 +1064,7 @@
           type="text"
           value={fitcardTotal}
           oninput={handleFitcardChange}
+          onkeydown={(e) => { if (e.key==='Enter') { e.preventDefault(); const t=e.target as HTMLInputElement; const evaled=evalExpression(t.value); if (evaled!==t.value) { t.value=evaled; handleFitcardChange(e as any); } } }}
           disabled={readonly}
           placeholder="0,00"
           class="ml-3 rounded-md border px-3 py-1.5 text-sm"
@@ -1159,6 +1205,9 @@
             </thead>
             <tbody>
               {#each restCategories as key}
+                {@const realVal = getRestRealWithAvulsos(key)}
+                {@const sistemaVal = getRestSistemaWithAvulsos(key)}
+                {@const diffVal = Math.round((realVal - sistemaVal) * 100) / 100}
                 <tr class="border-b">
                   <td class="py-2 pr-4">{restLabels[key]}</td>
                   <td class="py-2 pr-4 text-muted-foreground">{restClassif[key]}</td>
@@ -1167,23 +1216,24 @@
                       type="text"
                       value={sistemaVars[key] || ""}
                       oninput={(e) => handleRestSistemaChange(key, e)}
+                      onkeydown={(e) => { if (e.key==='Enter') { e.preventDefault(); const t=e.target as HTMLInputElement; const evaled=evalExpression(t.value); if (evaled!==t.value) { t.value=evaled; handleRestSistemaChange(key, {target:t} as any); } } }}
                       disabled={readonly}
                       placeholder="0,00"
                       class="w-28 rounded-md border px-2 py-1 text-sm"
                     />
                   </td>
-                  <td class="py-2 pr-4">{categorias[key]?.real ? formatMoney(categorias[key].real!) : "-"}</td>
+                  <td class="py-2 pr-4">{formatMoney(realVal)}</td>
                   <td class="py-2">
-                    <span class={Math.abs(getRestDiff(key)) < 0.005 ? "text-green-600" : "text-red-600"}>
-                      {getRestDiff(key) ? formatMoney(getRestDiff(key)) : "-"}
+                    <span class={Math.abs(diffVal) < 0.005 ? "text-green-600" : diffVal >= 0 ? "text-primary" : "text-red-600"}>
+                      {formatMoney(diffVal)}
                     </span>
                   </td>
                 </tr>
               {/each}
               <tr class="font-bold">
-                <td colspan="4" class="pt-3 text-right">Diferença Total:</td>
+                <td colspan="4" class="pt-3 text-right">Diferença (Real&nbsp;-&nbsp;Sistema):</td>
                 <td class="pt-3">
-                  <span class={Math.abs(getRestTotalDiff()) < 0.005 ? "text-blue-600" : "text-red-600"}>
+                  <span class={Math.abs(getRestTotalDiff()) < 0.005 ? "text-green-600" : getRestTotalDiff() >= 0 ? "text-primary" : "text-red-600"}>
                     {formatMoney(getRestTotalDiff())}
                   </span>
                 </td>

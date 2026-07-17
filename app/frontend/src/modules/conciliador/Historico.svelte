@@ -159,6 +159,10 @@
             {/if}
             <th class="px-4 py-2 text-right">Valor Sistema</th>
             <th class="px-4 py-2 text-right">Valor {tipo === "restaurante" ? "Real" : "Site"}</th>
+            {#if tipo === "restaurante"}
+              <th class="px-4 py-2 text-right">Dinheiro</th>
+              <th class="px-4 py-2 text-right">Moedas</th>
+            {/if}
             <th class="px-4 py-2 text-right">Diferenca</th>
             <th class="px-4 py-2">Status</th>
             <th class="px-4 py-2 text-right">Acoes</th>
@@ -185,8 +189,12 @@
               <td class="px-4 py-2 text-right">
                 {tipo === "restaurante" ? formatMoney(item.total_real) : formatMoney(item.total_site)}
               </td>
+              {#if tipo === "restaurante"}
+                <td class="px-4 py-2 text-right">{formatMoney(item.dinheiro_notas || 0)}</td>
+                <td class="px-4 py-2 text-right">{formatMoney(item.dinheiro_moedas || 0)}</td>
+              {/if}
               <td class="px-4 py-2 text-right">
-                <span class={Math.abs(item.diferenca_total || 0) < 0.005 ? "text-green-600" : "text-red-600"}>
+                <span class={(item.diferenca_total ?? 0) >= -0.005 ? "text-primary" : "text-red-600"}>
                   {formatMoney(item.diferenca_total)}
                 </span>
               </td>

@@ -100,7 +100,7 @@
       }
       sistema = Math.round(sistema * 100) / 100;
       real = Math.round(real * 100) / 100;
-      const diff = Math.round((sistema - real) * 100) / 100;
+      const diff = Math.round((real - sistema) * 100) / 100;
       out.push({ key, label: restLabels[key], sistema, real, diferenca: diff, status: Math.abs(diff) < 0.005 ? "OK" : "DIVERGENTE" });
     }
     return out;
@@ -157,7 +157,7 @@
         }
         sistema = Math.round(sistema * 100) / 100;
         site = Math.round(site * 100) / 100;
-        const diff = sistema - site;
+        const diff = Math.round((site - sistema) * 100) / 100;
         rows.push({ key, label: postoLabels[key] || key, sistema, site, diferenca: Math.round(diff * 100) / 100, status: Math.abs(diff) < 0.005 ? "OK" : "DIVERGENTE" });
       }
       for (const av of avulsos) {
@@ -190,7 +190,7 @@
         }
         sistema = Math.round(sistema * 100) / 100;
         real = Math.round(real * 100) / 100;
-        const diff = sistema - real;
+        const diff = real - sistema;
         rows.push({ key, label: restLabels[key], sistema, real, diferenca: Math.round(diff * 100) / 100, status: Math.abs(diff) < 0.005 ? "OK" : "DIVERGENTE" });
       }
       for (const av of avulsos) {
@@ -384,7 +384,7 @@
                       <td class="px-4 py-2 text-right">{formatMoney(row.sistema)}</td>
                       <td class="px-4 py-2 text-right">{formatMoney(row.real)}</td>
                       <td class="px-4 py-2 text-right">
-                        <span class={row.status === "OK" ? "text-green-600" : "text-red-600"}>{formatMoney(row.diferenca)}</span>
+                        <span class={row.status === "OK" ? "text-green-600" : (row.diferenca ?? 0) >= 0 ? "text-primary" : "text-red-600"}>{formatMoney(row.diferenca)}</span>
                       </td>
                       <td class="px-4 py-2 text-center">
                         <span
@@ -459,7 +459,7 @@
                 Diferença Total:
               </td>
               <td class="px-4 py-3 text-right">
-                <span class={Math.abs(totalDiff) < 0.005 ? "text-green-600" : "text-red-600"}>
+                <span class={Math.abs(totalDiff) < 0.005 ? "text-green-600" : totalDiff >= 0 ? "text-primary" : "text-red-600"}>
                   {formatMoney(Math.round(totalDiff * 100) / 100)}
                 </span>
               </td>

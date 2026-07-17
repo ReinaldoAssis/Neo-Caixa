@@ -10,6 +10,7 @@ from app.core import app_context
 from app.modules.conciliador.manifest import manifest
 from app.modules.conciliador.constants import (
     empty_categories_posto,
+    parse_money,
     empty_categories_restaurante,
     normalize_categories_posto,
     normalize_categories_restaurante,
@@ -77,10 +78,14 @@ def _normalize_posto(data: dict) -> dict:
     data.setdefault("lancamentos_avulsos", [])
     data.setdefault("premmia_lancamentos", [])
     data.setdefault("observacoes", "")
+    data.setdefault("dinheiro_notas", 0.0)
+    data.setdefault("dinheiro_moedas", 0.0)
     data.setdefault("criado_em", now)
     data["atualizado_em"] = now
     avulsos = data.get("lancamentos_avulsos") or []
     total_sistema, total_site, diferenca = totals_posto(data["categorias"], avulsos, keys, labels)
+    contagens = data.get("contagens_dinheiro") or []
+    data["dinheiro_notas"], data["dinheiro_moedas"] = _dinheiro_breakdown(contagens)
     data["total_sistema"] = total_sistema
     data["total_site"] = total_site
     data["diferenca_total"] = diferenca
@@ -111,6 +116,7 @@ def _normalize_restaurante(data: dict) -> dict:
     data["total_real"] = total_real
     data["diferenca_total"] = diferenca
     data["dinheiro_real"] = dinheiro_real
+    data["dinheiro_notas"], data["dinheiro_moedas"] = _dinheiro_breakdown(contagens)
     return data
 
 
@@ -133,6 +139,18 @@ def _dinheiro_real_from_contagens(contagens: list[dict]) -> float:
     if not gerais:
         return 0.0
     return round(sum(float(c.get("total", 0) or 0) for c in gerais), 2)
+
+
+def _dinheiro_breakdown(contagens: list[dict]) -> tuple[float, float]:
+    gerais = [c for c in (contagens or []) if c.get("label") == "Geral"]
+    notas_total = 0.0
+    moedas_total = 0.0
+    for c in gerais:
+        total = float(c.get("total", 0) or 0)
+        moedas = parse_money(c.get("moedas", 0))
+        notas_total += round(total - moedas, 2)
+        moedas_total += moedas
+    return round(notas_total, 2), round(moedas_total, 2)
 
 
 # ─── CRUD ────────────────────────────────────────────────────────
@@ -191,6 +209,7 @@ def _normalize_contagem_avulsa(data: dict) -> dict:
     data["total_real"] = total
     data["diferenca_total"] = 0.0
     data["dinheiro_real"] = total
+    data["dinheiro_notas"], data["dinheiro_moedas"] = _dinheiro_breakdown(contagens)
     return data
 
 
