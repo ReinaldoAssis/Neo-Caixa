@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { ArrowLeft } from "lucide-svelte";
+  import { ArrowLeft, Bot } from "lucide-svelte";
 
   import { onMount } from "svelte";
   import ContagemDinheiro from "./ContagemDinheiro.svelte";
   import Select from "./Select.svelte";
+  import AutomacaoModal from "./AutomacaoModal.svelte";
 
   interface Props {
     tipo: "posto" | "restaurante";
@@ -127,6 +128,8 @@
   let savingInFlight = false;
   let toastMessage = $state("");
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
+
+  let showAutomacao = $state(false);
 
   function showToast(msg: string) {
     toastMessage = msg;
@@ -665,6 +668,39 @@
         }
       }
     }
+  }
+
+  async function handleAutomacaoImport(result: any) {
+    if (tipo !== "restaurante") return;
+
+    let mapping: Record<string, string> = {};
+    try {
+      const res = await fetch("/api/conciliador/config/mapeamento");
+      if (res.ok) {
+        const data = await res.json();
+        mapping = data.mapeamento || {};
+      }
+    } catch {
+      // usa mapeamento vazio, nenhum pagamento mapeado
+    }
+
+    const dinheiroVal = parseMoney(result.dinheiro || "0");
+    categorias["DINHEIRO"] = { ...categorias["DINHEIRO"], real: dinheiroVal };
+
+    const pagamentos: any[] = result.pagamentos || [];
+    for (const pg of pagamentos) {
+      const subtipoCloudfy = (pg.subtipo || "").trim();
+      const key = mapping[subtipoCloudfy];
+      if (!key) continue;
+      const pos = parseMoney(pg.valor_vndpos || "0");
+      const tef = parseMoney(pg.valor_vndtef || "0");
+      const total = Math.round((pos + tef) * 100) / 100;
+      const current = categorias[key] || { sistema: 0, real: 0 };
+      categorias[key] = { ...current, real: Math.round((current.real + total) * 100) / 100 };
+    }
+
+    categorias = categorias;
+    initRestSistemaVars();
   }
 
   // Lancamentos avulsos
@@ -1315,9 +1351,20 @@
 
       <!-- Restaurante: Manual system values -->
       <div class="mb-4 rounded-lg border p-4">
-        <h3 class="mb-3 text-sm font-semibold">
-          C - Conciliacao (Sistema = manual, Real = auto){splitMode ? ` — Turno ${activeTurno}` : ""}
-        </h3>
+        <div class="mb-3 flex items-center gap-2">
+          <h3 class="text-sm font-semibold">
+            C - Conciliacao (Sistema = manual, Real = auto){splitMode ? ` — Turno ${activeTurno}` : ""}
+          </h3>
+          {#if !readonly}
+            <button
+              onclick={() => (showAutomacao = true)}
+              class="ml-auto inline-flex h-7 items-center gap-1.5 rounded-md bg-primary px-3 text-xs text-primary-foreground hover:bg-primary/90"
+            >
+              <Bot class="h-3.5 w-3.5" />
+              Automacao
+            </button>
+          {/if}
+        </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
@@ -1504,6 +1551,13 @@
       Ver Resultado
     </button>
   </div>
+
+  {#if showAutomacao}
+    <AutomacaoModal
+      onClose={() => (showAutomacao = false)}
+      onImport={(result) => handleAutomacaoImport(result)}
+    />
+  {/if}
 </div>
 
 <style>

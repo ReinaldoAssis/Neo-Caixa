@@ -162,6 +162,9 @@ SERIAL_200_MODES = ("obrigatorio_todas", "opcional_geral", "opcional_todas")
 DEFAULT_SETTINGS = {
     "contagem_tab_behavior": "icone",
     "serial_200_mode": "obrigatorio_todas",
+    "cloudfy_login": "",
+    "cloudfy_senha": "",
+    "cloudfy_debug": False,
 }
 
 
@@ -184,6 +187,9 @@ def load_settings(database) -> dict:
         serial_mode = doc.get("serial_200_mode")
         if serial_mode in SERIAL_200_MODES:
             settings["serial_200_mode"] = serial_mode
+        settings["cloudfy_login"] = doc.get("cloudfy_login", "")
+        settings["cloudfy_senha"] = doc.get("cloudfy_senha", "")
+        settings["cloudfy_debug"] = doc.get("cloudfy_debug", False)
     return settings
 
 
@@ -206,6 +212,13 @@ def save_settings(database, data: dict) -> dict:
                 f"serial_200_mode invalido. Use um de: {', '.join(SERIAL_200_MODES)}"
             )
         settings["serial_200_mode"] = serial_mode
+
+    if "cloudfy_login" in data:
+        settings["cloudfy_login"] = str(data.get("cloudfy_login", ""))
+    if "cloudfy_senha" in data:
+        settings["cloudfy_senha"] = str(data.get("cloudfy_senha", ""))
+    if "cloudfy_debug" in data:
+        settings["cloudfy_debug"] = bool(data.get("cloudfy_debug", False))
 
     payload = {"key": SETTINGS_KEY, **settings}
     existing = database.search(CONFIG_TABLE, {"key": SETTINGS_KEY})
@@ -299,4 +312,47 @@ def build_pagbank_map(config: dict) -> dict[tuple[str, str], str]:
     for g in config["grupos"]:
         for p in g.get("pagbank", []):
             mapping[(normalize_text(p.get("bandeira", "")), normalize_text(p.get("forma", "")))] = g["key"]
+    return mapping
+
+
+# ─── Mapeamento Cloudfy → Sistema (restaurante) ─────────────────
+
+CLOUDY_MAPEAMENTO_KEY = "cloudfy_mapeamento"
+
+DEFAULT_CLOUDY_MAPEAMENTO: dict[str, str] = {
+    "PIX ADQUIRENTE": "PIX",
+    "ELO DEBITO": "ELO_DEBITO",
+    "MAESTRO": "MAESTRO",
+    "VC ELECTRON": "VC_ELECTRON",
+    "AMEX": "AMEX",
+    "ELO CR": "ELO_CR",
+    "MASTERCARD": "MASTERCARD",
+    "VISA": "VISA",
+}
+
+
+def load_cloudfy_mapeamento(database) -> dict[str, str]:
+    doc = None
+    try:
+        results = database.search(CONFIG_TABLE, {"key": CLOUDY_MAPEAMENTO_KEY})
+        doc = results[0] if results else None
+    except Exception:
+        doc = None
+    if doc and isinstance(doc.get("map"), dict):
+        return doc["map"]
+    return dict(DEFAULT_CLOUDY_MAPEAMENTO)
+
+
+def save_cloudfy_mapeamento(database, mapping: dict[str, str]) -> dict[str, str]:
+    if not isinstance(mapping, dict):
+        raise ValueError("Mapeamento deve ser um dict {subtipo_cloudfy: categoria_sistema}.")
+    payload = {"key": CLOUDY_MAPEAMENTO_KEY, "map": mapping}
+    existing = database.search(CONFIG_TABLE, {"key": CLOUDY_MAPEAMENTO_KEY})
+    if existing:
+        raw_id = getattr(existing[0], "doc_id", None)
+        if raw_id is None:
+            raw_id = existing[0].get("id")
+        database.update(CONFIG_TABLE, str(raw_id), payload)
+    else:
+        database.insert(CONFIG_TABLE, payload)
     return mapping

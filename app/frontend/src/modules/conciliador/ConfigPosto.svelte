@@ -21,7 +21,16 @@
   let serial200Mode = $state<"obrigatorio_todas" | "opcional_geral" | "opcional_todas">("obrigatorio_todas");
   let savingSerial = $state(false);
 
-  let activeTab = $state<"geral" | "grupos">("geral");
+  let cloudfyLogin = $state("");
+  let cloudfySenha = $state("");
+  let cloudfyDebug = $state(false);
+  let savingCloudfy = $state(false);
+
+  let cloudfyMap = $state<Record<string, string>>({});
+  let savingMap = $state(false);
+  let cloudfyPadrao = $state<Record<string, string>>({});
+
+  let activeTab = $state<"geral" | "grupos" | "equivalencias">("geral");
 
   // ─── Auto-update ───
   let updChecking = $state(false);
@@ -125,6 +134,15 @@
         if (["obrigatorio_todas", "opcional_geral", "opcional_todas"].includes(s.serial_200_mode)) {
           serial200Mode = s.serial_200_mode;
         }
+        cloudfyLogin = s.cloudfy_login || "";
+        cloudfySenha = s.cloudfy_senha || "";
+        cloudfyDebug = s.cloudfy_debug || false;
+      }
+      const mres = await fetch("/api/conciliador/config/mapeamento");
+      if (mres.ok) {
+        const m = await mres.json();
+        cloudfyMap = m.mapeamento || {};
+        cloudfyPadrao = m.padrao || {};
       }
     } catch {
       grupos = [];
@@ -168,6 +186,53 @@
       savingSerial = false;
     }
   }
+
+  async function saveCloudfy() {
+    savingCloudfy = true;
+    try {
+      const res = await fetch("/api/conciliador/config/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cloudfy_login: cloudfyLogin,
+          cloudfy_senha: cloudfySenha,
+          cloudfy_debug: cloudfyDebug,
+        }),
+      });
+      if (!res.ok) throw new Error("Erro ao salvar configuracoes Cloudfy");
+      flash("Credenciais Cloudfy salvas.");
+    } catch (e: any) {
+      flash(e.message, "err");
+    } finally {
+      savingCloudfy = false;
+    }
+  }
+
+  async function saveMap() {
+    savingMap = true;
+    try {
+      const res = await fetch("/api/conciliador/config/mapeamento", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mapeamento: cloudfyMap }),
+      });
+      if (!res.ok) throw new Error("Erro ao salvar mapeamento.");
+      flash("Mapeamento Cloudfy salvo.");
+    } catch (e: any) {
+      flash(e.message, "err");
+    } finally {
+      savingMap = false;
+    }
+  }
+
+  function resetMap() {
+    cloudfyMap = { ...cloudfyPadrao };
+  }
+
+  const restCategories = [
+    "PIX", "ELO_DEBITO", "MAESTRO", "VC_ELECTRON",
+    "AMEX", "ELO_CR", "MASTERCARD", "VISA",
+  ];
 
   function normalizeGrupo(g: any): Grupo {
     return {
@@ -318,6 +383,16 @@
     >
       Grupos Posto
     </button>
+    <button
+      onclick={() => (activeTab = "equivalencias")}
+      class="px-4 py-2 text-sm font-medium transition-colors"
+      class:border-b-2={activeTab === "equivalencias"}
+      class:border-primary={activeTab === "equivalencias"}
+      class:text-foreground={activeTab === "equivalencias"}
+      class:text-muted-foreground={activeTab !== "equivalencias"}
+    >
+      Equivalencias
+    </button>
   </div>
 
   {#if feedback}
@@ -427,6 +502,48 @@
                 ? "Serial opcional na contagem Geral, mas obrigatório nas demais contagens."
                 : "Serial opcional em todas as contagens."}
           </p>
+        </div>
+
+        <!-- Cloudfy -->
+        <div class="border p-4">
+          <h2 class="text-sm font-semibold">Automacao Cloudfy</h2>
+          <p class="mb-3 text-xs text-muted-foreground">
+            Credenciais de acesso ao sistema Cloudfy para automacao de importacao
+          </p>
+          <div class="space-y-3">
+            <div class="flex items-center gap-3">
+              <label class="w-24 text-sm">Login</label>
+              <input
+                type="text"
+                bind:value={cloudfyLogin}
+                placeholder="usuario@email.com"
+                class="w-64 rounded-md border bg-background px-3 py-1.5 text-sm"
+              />
+            </div>
+            <div class="flex items-center gap-3">
+              <label class="w-24 text-sm">Senha</label>
+              <input
+                type="password"
+                bind:value={cloudfySenha}
+                placeholder="Senha Cloudfy"
+                class="w-64 rounded-md border bg-background px-3 py-1.5 text-sm"
+              />
+            </div>
+            <div class="flex items-center gap-3">
+              <label class="w-24 text-sm">Modo debug</label>
+              <label class="flex items-center gap-2 text-sm">
+                <input type="checkbox" bind:checked={cloudfyDebug} />
+                Abrir navegador visivel (debug)
+              </label>
+            </div>
+            <button
+              onclick={saveCloudfy}
+              disabled={savingCloudfy}
+              class="inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {savingCloudfy ? "Salvando..." : "Salvar credenciais"}
+            </button>
+          </div>
         </div>
 
         <!-- Atualizacoes -->
@@ -649,6 +766,61 @@
         >
           + Adicionar grupo
         </button>
+      </div>
+      {:else if activeTab === "equivalencias"}
+      <div class="space-y-4">
+        <h2 class="text-sm font-semibold">Mapeamento Cloudfy &rarr; Sistema</h2>
+        <p class="text-xs text-muted-foreground">
+          Define qual categoria do sistema cada subtipo do Cloudfy representa.
+          O mapeamento usa o valor da coluna <strong>subtipo</strong> na conciliacao de cartoes.
+        </p>
+        <div class="border">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b bg-muted/50 text-left">
+                <th class="px-4 py-2">Subtipo Cloudfy</th>
+                <th class="px-4 py-2">Categoria Sistema</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each Object.keys(cloudfyPadrao) as subtipo}
+                {@const key = subtipo}
+                <tr class="border-b">
+                  <td class="px-4 py-2 font-medium">{subtipo}</td>
+                  <td class="px-4 py-2">
+                    <select
+                      value={cloudfyMap[key] || ""}
+                      onchange={(e) => {
+                        cloudfyMap = { ...cloudfyMap, [key]: (e.target as HTMLSelectElement).value };
+                      }}
+                      class="border bg-background px-3 py-1.5 text-sm"
+                    >
+                      <option value="">-- selecionar --</option>
+                      {#each restCategories as cat}
+                        <option value={cat}>{cat}</option>
+                      {/each}
+                    </select>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        <div class="flex gap-2">
+          <button
+            onclick={saveMap}
+            disabled={savingMap}
+            class="inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {savingMap ? "Salvando..." : "Salvar mapeamento"}
+          </button>
+          <button
+            onclick={resetMap}
+            class="inline-flex h-9 items-center border px-4 text-sm hover:bg-accent"
+          >
+            Restaurar padrao
+          </button>
+        </div>
       </div>
       {/if}
     {/if}

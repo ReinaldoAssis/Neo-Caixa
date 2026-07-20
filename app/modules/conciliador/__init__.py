@@ -36,8 +36,15 @@ from app.modules.conciliador.config_posto import (
     config_labels,
     load_settings,
     save_settings,
+    load_cloudfy_mapeamento,
+    save_cloudfy_mapeamento,
+    DEFAULT_CLOUDY_MAPEAMENTO,
 )
 from app.modules.conciliador.export import generate_conciliation_pdf_bytes
+from app.modules.conciliador.automacao import (
+    listar_caixas_cloudfy,
+    importar_caixa_cloudfy,
+)
 
 router = APIRouter(prefix="/api/conciliador", tags=["Conciliador"])
 TABLE = "conciliacoes"
@@ -481,6 +488,82 @@ async def update_module_settings(data: dict):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return saved
+
+
+# ─── Mapeamento Cloudfy → Sistema ──────────────────────────────
+
+@router.get("/config/mapeamento")
+async def get_mapeamento():
+    return {
+        "mapeamento": load_cloudfy_mapeamento(app_context.database),
+        "padrao": DEFAULT_CLOUDY_MAPEAMENTO,
+    }
+
+
+@router.put("/config/mapeamento")
+async def update_mapeamento(data: dict):
+    mapping = data.get("mapeamento")
+    if not isinstance(mapping, dict):
+        raise HTTPException(status_code=400, detail="Mapeamento deve ser um dict.")
+    try:
+        saved = save_cloudfy_mapeamento(app_context.database, mapping)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"mapeamento": saved}
+
+
+# ─── Automação Cloudfy ──────────────────────────────────────────
+
+@router.post("/automacao/listar")
+async def automacao_listar():
+    import asyncio as aio
+
+    settings = load_settings(app_context.database)
+    login = settings.get("cloudfy_login", "")
+    senha = settings.get("cloudfy_senha", "")
+    debug = settings.get("cloudfy_debug", False)
+
+    if not login or not senha:
+        raise HTTPException(
+            status_code=400,
+            detail="Credenciais Cloudfy nao configuradas. Acesse Configuracoes.",
+        )
+
+    loop = aio.get_running_loop()
+    result = await loop.run_in_executor(
+        None, listar_caixas_cloudfy, login, senha, debug
+    )
+    if "erro" in result:
+        raise HTTPException(status_code=500, detail=result["erro"])
+    return result
+
+
+@router.post("/automacao/importar")
+async def automacao_importar(data: dict):
+    import asyncio as aio
+
+    caixa_idx = data.get("caixa_idx")
+    if caixa_idx is None:
+        raise HTTPException(status_code=400, detail="Informe caixa_idx.")
+
+    settings = load_settings(app_context.database)
+    login = settings.get("cloudfy_login", "")
+    senha = settings.get("cloudfy_senha", "")
+    debug = settings.get("cloudfy_debug", False)
+
+    if not login or not senha:
+        raise HTTPException(
+            status_code=400,
+            detail="Credenciais Cloudfy nao configuradas.",
+        )
+
+    loop = aio.get_running_loop()
+    result = await loop.run_in_executor(
+        None, importar_caixa_cloudfy, login, senha, int(caixa_idx), debug
+    )
+    if "erro" in result:
+        raise HTTPException(status_code=500, detail=result["erro"])
+    return result
 
 
 # ─── Validação de contagens ──────────────────────────────────────
