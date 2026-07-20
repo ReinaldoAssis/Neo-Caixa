@@ -132,6 +132,7 @@
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
   let showAutomacao = $state(false);
+  let showLancamento = $state(false);
 
   function showToast(msg: string) {
     toastMessage = msg;
@@ -729,6 +730,47 @@
 
     categorias = categorias;
     initRestSistemaVars();
+  }
+
+  async function handleAutomacaoLancar(caixaIdx: number) {
+    let mapping: Record<string, string> = {};
+    try {
+      const res = await fetch("/api/conciliador/config/mapeamento");
+      if (res.ok) {
+        const data = await res.json();
+        mapping = data.mapeamento || {};
+      }
+    } catch {
+      // usa vazio
+    }
+
+    const dinheiroReal = categorias["DINHEIRO"]?.real || 0;
+    const dinheiroStr = String(dinheiroReal).replace(".", ",");
+
+    try {
+      const res = await fetch("/api/conciliador/automacao/lancar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          caixa_idx: caixaIdx,
+          dinheiro_valor: dinheiroStr,
+          mapeamento: mapping,
+          categorias: JSON.parse(JSON.stringify(categorias)),
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(err.detail || "Erro ao lancar no Cloudfy.");
+        return;
+      }
+      const data = await res.json();
+      if (data.erro) {
+        alert(data.erro);
+        return;
+      }
+    } catch (e: any) {
+      alert(e.message || "Erro de conexao.");
+    }
   }
 
   // Lancamentos avulsos
@@ -1401,6 +1443,13 @@
               <Bot class="h-3.5 w-3.5" />
               Automacao
             </button>
+            <button
+              onclick={() => (showLancamento = true)}
+              class="inline-flex h-7 items-center gap-1.5 rounded-md border border-primary px-3 text-xs text-primary hover:bg-accent"
+            >
+              <Bot class="h-3.5 w-3.5" />
+              Auto Lancar
+            </button>
           {/if}
         </div>
         <div class="overflow-x-auto">
@@ -1604,6 +1653,15 @@
     <AutomacaoModal
       onClose={() => (showAutomacao = false)}
       onImport={(result) => handleAutomacaoImport(result)}
+    />
+  {/if}
+
+  {#if showLancamento}
+    <AutomacaoModal
+      mode="lancar"
+      onClose={() => (showLancamento = false)}
+      onImport={() => {}}
+      onLancar={(caixaIdx) => handleAutomacaoLancar(caixaIdx)}
     />
   {/if}
 </div>

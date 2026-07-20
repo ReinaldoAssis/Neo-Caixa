@@ -44,6 +44,7 @@ from app.modules.conciliador.export import generate_conciliation_pdf_bytes
 from app.modules.conciliador.automacao import (
     listar_caixas_cloudfy,
     importar_caixa_cloudfy,
+    lancar_caixa_cloudfy,
 )
 
 router = APIRouter(prefix="/api/conciliador", tags=["Conciliador"])
@@ -560,6 +561,41 @@ async def automacao_importar(data: dict):
     loop = aio.get_running_loop()
     result = await loop.run_in_executor(
         None, importar_caixa_cloudfy, login, senha, int(caixa_idx), debug
+    )
+    if "erro" in result:
+        raise HTTPException(status_code=500, detail=result["erro"])
+    return result
+
+
+@router.post("/automacao/lancar")
+async def automacao_lancar(data: dict):
+    import asyncio as aio
+
+    caixa_idx = data.get("caixa_idx")
+    if caixa_idx is None:
+        raise HTTPException(status_code=400, detail="Informe caixa_idx.")
+
+    settings = load_settings(app_context.database)
+    login = settings.get("cloudfy_login", "")
+    senha = settings.get("cloudfy_senha", "")
+
+    if not login or not senha:
+        raise HTTPException(status_code=400, detail="Credenciais Cloudfy nao configuradas.")
+
+    dinheiro_valor = str(data.get("dinheiro_valor", "0")).replace(".", ",")
+    mapeamento = data.get("mapeamento", {})
+    categorias = data.get("categorias", {})
+
+    loop = aio.get_running_loop()
+    result = await loop.run_in_executor(
+        None,
+        lancar_caixa_cloudfy,
+        login,
+        senha,
+        int(caixa_idx),
+        dinheiro_valor,
+        mapeamento,
+        categorias,
     )
     if "erro" in result:
         raise HTTPException(status_code=500, detail=result["erro"])
