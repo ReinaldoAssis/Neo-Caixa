@@ -208,29 +208,30 @@ class CloudfyScraper:
         return CaixaDetalhe(resumo=caixa, dinheiro=dinheiro, pagamentos=pagamentos)
 
     async def _extrair_dinheiro(self, page) -> str:
+        # Aguarda tabela de formas de pagamento carregar
         try:
-            span = page.locator('span[ng-bind*="CC077_VL_CALC"]')
-            await span.first.wait_for(state="attached", timeout=10000)
-            await page.wait_for_timeout(1500)
-            text = (await span.first.text_content() or "").strip()
-            if text:
-                return text
+            await page.wait_for_selector(
+                'tr[ng-repeat*="RS_FORMASPAGTO"]', timeout=15000
+            )
         except Exception:
             pass
+        await page.wait_for_timeout(2000)
 
-        # Fallback: localiza linha DINHEIRO na tabela RS_FORMASPAGTO
+        # Extrai via JS do escopo Angular — mais confiavel que seletor CSS
         try:
-            rows = page.locator('tr[ng-repeat*="RS_FORMASPAGTO"]')
-            count = await rows.count()
-            for i in range(count):
-                row = rows.nth(i)
-                tds = row.locator("td")
-                if await tds.count() > 0:
-                    first_td = (await tds.first.text_content() or "").strip()
-                    if first_td.upper() == "DINHEIRO":
-                        span = row.locator('span[ng-bind*="CC077_VL_CALC"]')
-                        if await span.count() > 0:
-                            return (await span.first.text_content() or "").strip()
+            valor = await page.evaluate("""
+                const rows = document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]');
+                for (const row of rows) {
+                    const tds = row.querySelectorAll('td');
+                    if (tds.length > 0 && tds[0].textContent.trim().toUpperCase() === 'DINHEIRO') {
+                        const span = row.querySelector('span[ng-bind*="CC077_VL_CALC"]');
+                        if (span) return span.textContent.trim();
+                    }
+                }
+                return '';
+            """)
+            if valor:
+                return valor.strip()
         except Exception:
             pass
 

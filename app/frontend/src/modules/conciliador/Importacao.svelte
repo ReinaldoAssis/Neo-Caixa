@@ -102,6 +102,8 @@
 
   let categorias = $state<Record<string, { sistema: number; site?: number; real?: number }>>({});
   let sistemaVars = $state<Record<string, string>>({});
+  let realVars = $state<Record<string, string>>({});
+  let siteVars = $state<Record<string, string>>({});
 
   let fitcardTotal = $state("");
   let sangria = $state(0);
@@ -218,10 +220,13 @@
       for (const key of restCategories) {
         cats[key] = { sistema: 0, real: 0 };
         sistemaVars[key] = "";
+        realVars[key] = "";
       }
     } else {
       for (const key of postoCategories) {
         cats[key] = { sistema: 0, site: 0 };
+        sistemaVars[key] = "";
+        siteVars[key] = "";
       }
     }
     categorias = cats;
@@ -279,6 +284,8 @@
     for (const key of postoCategories) {
       const val = categorias[key]?.sistema || 0;
       sistemaVars[key] = val ? String(val).replace(".", ",") : "";
+      const siteVal = categorias[key]?.site || 0;
+      siteVars[key] = siteVal ? String(siteVal).replace(".", ",") : "";
     }
   }
 
@@ -286,6 +293,8 @@
     for (const key of restCategories) {
       const val = categorias[key]?.sistema || 0;
       sistemaVars[key] = val ? String(val).replace(".", ",") : "";
+      const realVal = categorias[key]?.real || 0;
+      realVars[key] = realVal ? String(realVal).replace(".", ",") : "";
     }
   }
 
@@ -482,17 +491,20 @@
   function emptyRestTurno() {
     const cats: Record<string, any> = {};
     const vars: Record<string, string> = {};
+    const rvars: Record<string, string> = {};
     for (const key of restCategories) {
       cats[key] = { sistema: 0, real: 0 };
       vars[key] = "";
+      rvars[key] = "";
     }
-    return { categorias: cats, sistemaVars: vars, contagens: [emptyGeralContagem()], avulsos: [] };
+    return { categorias: cats, sistemaVars: vars, realVars: rvars, contagens: [emptyGeralContagem()], avulsos: [] };
   }
 
   function snapshotActiveTurno() {
     turnoStore[activeTurno] = {
       categorias: JSON.parse(JSON.stringify(categorias)),
       sistemaVars: { ...sistemaVars },
+      realVars: { ...realVars },
       contagens: JSON.parse(JSON.stringify(contagensDinheiro)),
       avulsos: JSON.parse(JSON.stringify(lancamentosAvulsos)),
     };
@@ -503,6 +515,7 @@
     if (!s) return;
     categorias = s.categorias;
     sistemaVars = s.sistemaVars;
+    realVars = s.realVars || {};
     contagensDinheiro = s.contagens;
     lancamentosAvulsos = s.avulsos;
   }
@@ -527,6 +540,7 @@
     turnoStore[1] = {
       categorias: JSON.parse(JSON.stringify(categorias)),
       sistemaVars: { ...sistemaVars },
+      realVars: { ...realVars },
       contagens: JSON.parse(JSON.stringify(contagensDinheiro)),
       avulsos: JSON.parse(JSON.stringify(lancamentosAvulsos)),
     };
@@ -569,7 +583,14 @@
     sistemaVars[key] = (e.target as HTMLInputElement).value;
     const val = parseMoney(sistemaVars[key]);
     categorias[key] = { ...categorias[key], sistema: val };
-    categorias = categorias; // trigger reactivity
+    categorias = categorias;
+  }
+
+  function handleRestRealChange(key: string, e: Event) {
+    realVars[key] = (e.target as HTMLInputElement).value;
+    const val = parseMoney(realVars[key]);
+    categorias[key] = { ...categorias[key], real: val };
+    categorias = categorias;
   }
 
   function getRestDiff(key: string): number {
@@ -651,6 +672,13 @@
     categorias = categorias;
   }
 
+  function handlePostoSiteChange(key: string, e: Event) {
+    siteVars[key] = (e.target as HTMLInputElement).value;
+    const val = parseMoney(siteVars[key]);
+    categorias[key] = { ...categorias[key], sistema: categorias[key].sistema, site: val };
+    categorias = categorias;
+  }
+
   function handleContagemChange() {
     if (tipo === "restaurante") {
       const geral = contagensDinheiro.find((c: any) => c.label === "Geral");
@@ -685,7 +713,7 @@
     }
 
     const dinheiroVal = parseMoney(result.dinheiro || "0");
-    categorias["DINHEIRO"] = { ...categorias["DINHEIRO"], real: dinheiroVal };
+    categorias["DINHEIRO"] = { ...categorias["DINHEIRO"], sistema: dinheiroVal, real: categorias["DINHEIRO"].real };
 
     const pagamentos: any[] = result.pagamentos || [];
     for (const pg of pagamentos) {
@@ -696,7 +724,7 @@
       const tef = parseMoney(pg.valor_vndtef || "0");
       const total = Math.round((pos + tef) * 100) / 100;
       const current = categorias[key] || { sistema: 0, real: 0 };
-      categorias[key] = { ...current, real: Math.round((current.real + total) * 100) / 100 };
+      categorias[key] = { ...current, sistema: Math.round((current.sistema + total) * 100) / 100 };
     }
 
     categorias = categorias;
@@ -1272,7 +1300,17 @@
                       class="w-28 rounded-md border px-2 py-1 text-sm"
                     />
                   </td>
-                  <td class="py-2 pr-4">{formatMoney(siteVal)}</td>
+                  <td class="py-2 pr-4">
+                    <input
+                      type="text"
+                      value={siteVars[key] || ""}
+                      oninput={(e) => handlePostoSiteChange(key, e)}
+                      onkeydown={(e) => { if (e.key==='Enter') { e.preventDefault(); const t=e.target as HTMLInputElement; const evaled=evalExpression(t.value); if (evaled!==t.value) { t.value=evaled; handlePostoSiteChange(key, {target:t} as any); } } }}
+                      disabled={readonly}
+                      placeholder="0,00"
+                      class="w-28 rounded-md border px-2 py-1 text-sm"
+                    />
+                  </td>
                   <td class="py-2">
                     <span class={Math.abs(diffVal) < 0.005 ? "text-green-600" : diffVal >= 0 ? "text-primary" : "text-red-600"}>
                       {formatMoney(diffVal)}
@@ -1395,7 +1433,17 @@
                       class="w-28 rounded-md border px-2 py-1 text-sm"
                     />
                   </td>
-                  <td class="py-2 pr-4">{formatMoney(realVal)}</td>
+                  <td class="py-2 pr-4">
+                    <input
+                      type="text"
+                      value={realVars[key] || ""}
+                      oninput={(e) => handleRestRealChange(key, e)}
+                      onkeydown={(e) => { if (e.key==='Enter') { e.preventDefault(); const t=e.target as HTMLInputElement; const evaled=evalExpression(t.value); if (evaled!==t.value) { t.value=evaled; handleRestRealChange(key, {target:t} as any); } } }}
+                      disabled={readonly}
+                      placeholder="0,00"
+                      class="w-28 rounded-md border px-2 py-1 text-sm"
+                    />
+                  </td>
                   <td class="py-2">
                     <span class={Math.abs(diffVal) < 0.005 ? "text-green-600" : diffVal >= 0 ? "text-primary" : "text-red-600"}>
                       {formatMoney(diffVal)}
