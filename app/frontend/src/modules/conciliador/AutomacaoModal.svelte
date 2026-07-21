@@ -86,6 +86,11 @@
     </div>
 
     <div class="flex-1 overflow-auto p-4">
+      {#if loading || importing}
+        <div class="mx-4 mb-3 h-1 overflow-hidden rounded bg-muted">
+          <div class="h-full w-1/3 animate-progress rounded bg-primary"></div>
+        </div>
+      {/if}
       {#if loading}
         <div class="flex items-center justify-center gap-2 py-12">
           <Loader2 class="h-5 w-5 animate-spin text-primary" />
@@ -179,3 +184,13 @@
     {/if}
   </div>
 </div>
+
+<style>
+  @keyframes progress {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+  }
+  .animate-progress {
+    animation: progress 1.5s infinite;
+  }
+</style>

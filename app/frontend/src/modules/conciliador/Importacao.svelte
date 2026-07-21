@@ -301,6 +301,20 @@
 
   function initRestRealLabels() {}
 
+  function syncRealVars() {
+    for (const key of restCategories) {
+      const val = categorias[key]?.real || 0;
+      realVars[key] = val ? String(val).replace(".", ",") : "";
+    }
+  }
+
+  function syncSiteVars() {
+    for (const key of postoCategories) {
+      const val = categorias[key]?.site || 0;
+      siteVars[key] = val ? String(val).replace(".", ",") : "";
+    }
+  }
+
   function parseMoney(text: string): number {
     if (!text || !text.trim()) return 0;
     let cleaned = text.replace("R$", "").replace(/\s/g, "").trim();
@@ -393,6 +407,7 @@
           categorias[key].site = result.categorias?.[key]?.site || 0;
         }
       }
+      syncSiteVars();
     } catch (e: any) {
       errorMessage = e.message;
     } finally {
@@ -415,6 +430,7 @@
           categorias[key].site = (categorias[key].site || 0) + result.categorias[key].site;
         }
       }
+      syncSiteVars();
     } catch (e: any) {
       errorMessage = e.message;
     } finally {
@@ -468,6 +484,7 @@
         if (key === "DINHEIRO") continue;
         categorias[key].real = result.categorias?.[key]?.real || 0;
       }
+      syncRealVars();
     } catch (e: any) {
       errorMessage = e.message;
     } finally {
@@ -570,6 +587,7 @@
     turnoStore[1] = store1;
     turnoStore[2] = store2;
     loadTurno(activeTurno);
+    syncRealVars();
   }
 
   function handleFitcardChange(e: Event) {
@@ -686,6 +704,7 @@
       const dinheiroReal = geral?.total || 0;
       categorias["DINHEIRO"] = { ...categorias["DINHEIRO"], sistema: categorias["DINHEIRO"].sistema, real: dinheiroReal };
       categorias = categorias;
+      syncRealVars();
     } else {
       const geral = contagensDinheiro.find((c: any) => c.label === "Geral");
       const cashTotal = geral?.total || 0;
@@ -696,6 +715,7 @@
           break;
         }
       }
+      syncSiteVars();
     }
   }
 
@@ -1034,8 +1054,9 @@
             } else {
               const err = await res.json().catch(() => ({}));
               errorMessage = err.detail || "Nao foi possivel reabrir o caixa.";
-            }
-          }
+        }
+      }
+      syncSiteVars();
         }}
         class="ml-auto inline-flex h-8 items-center bg-primary px-3 text-sm text-primary-foreground hover:bg-primary-hover"
       >

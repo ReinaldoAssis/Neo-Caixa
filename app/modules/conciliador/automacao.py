@@ -395,7 +395,7 @@ class CloudfyScraper:
                 await inp.first.fill(valor_str)
                 await page.wait_for_timeout(200)
 
-            print(f"[OK] Lancado {subtipo} → {cat_key}: {valor_str}")
+            print(f"[OK] Lancado {subtipo} -> {cat_key}: {valor_str}")
 
     async def _confirmar_conciliacao(self, page) -> None:
         """Clica no botao Confirmar na pagina de conciliacao."""
