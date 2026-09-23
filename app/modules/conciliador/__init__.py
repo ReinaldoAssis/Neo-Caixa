@@ -45,6 +45,12 @@ from app.modules.conciliador.automacao import (
     listar_caixas_cloudfy,
     importar_caixa_cloudfy,
     lancar_caixa_cloudfy,
+    baixar_descontos_cloudfy,
+)
+from app.modules.conciliador.descontos import (
+    list_descontos,
+    toggle_conferido,
+    upsert_descontos,
 )
 
 router = APIRouter(prefix="/api/conciliador", tags=["Conciliador"])
@@ -600,6 +606,55 @@ async def automacao_lancar(data: dict):
     if "erro" in result:
         raise HTTPException(status_code=500, detail=result["erro"])
     return result
+
+
+# ─── Gerenciador de Descontos ───────────────────────────────────
+
+@router.post("/descontos/sync")
+async def descontos_sync():
+    import asyncio as aio
+
+    settings = load_settings(app_context.database)
+    login = settings.get("cloudfy_login", "")
+    senha = settings.get("cloudfy_senha", "")
+    debug = settings.get("cloudfy_debug", False)
+
+    if not login or not senha:
+        raise HTTPException(
+            status_code=400,
+            detail="Credenciais Cloudfy nao configuradas. Acesse Configuracoes.",
+        )
+
+    loop = aio.get_running_loop()
+    result = await loop.run_in_executor(
+        None, baixar_descontos_cloudfy, login, senha, debug
+    )
+    if "erro" in result:
+        raise HTTPException(status_code=500, detail=result["erro"])
+
+    resumo = upsert_descontos(app_context.database, result.get("descontos", []))
+    return {"baixados": result.get("total", 0), **resumo}
+
+
+@router.get("/descontos")
+async def descontos_listar(
+    data_ini: str | None = Query(None),
+    data_fim: str | None = Query(None),
+    cupom: str | None = Query(None),
+    cliente: str | None = Query(None),
+    motivo: str | None = Query(None),
+):
+    return list_descontos(
+        app_context.database, data_ini, data_fim, cupom, cliente, motivo
+    )
+
+
+@router.post("/descontos/{desconto_id}/conferido")
+async def descontos_toggle(desconto_id: str):
+    doc = toggle_conferido(app_context.database, desconto_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Desconto nao encontrado")
+    return doc
 
 
 # ─── Validação de contagens ──────────────────────────────────────

@@ -5,12 +5,15 @@
   import Resultado from "./Resultado.svelte";
   import ConfigPosto from "./ConfigPosto.svelte";
   import ContagemAvulsa from "./ContagemAvulsa.svelte";
+  import Ferramentas from "./Ferramentas.svelte";
 
   type Tipo = "posto" | "restaurante";
   type View = "historico" | "importacao" | "resultado" | "contagem";
+  type RestSubTab = "caixas" | "ferramentas";
 
   let activeTipo = $state<Tipo>("posto");
   let showConfig = $state(false);
+  let restSubTab = $state<RestSubTab>("caixas");
 
   let postoView = $state<View>("historico");
   let postoId = $state<string | null>(null);
@@ -122,6 +125,31 @@
     </div>
   </div>
 
+  {#if !showConfig && activeTipo === "restaurante"}
+    <div class="flex border-b bg-muted/30">
+      <button
+        onclick={() => (restSubTab = "caixas")}
+        class="px-4 py-2 text-sm font-medium transition-colors"
+        class:border-b-2={restSubTab === "caixas"}
+        class:border-primary={restSubTab === "caixas"}
+        class:text-foreground={restSubTab === "caixas"}
+        class:text-muted-foreground={restSubTab !== "caixas"}
+      >
+        Caixas
+      </button>
+      <button
+        onclick={() => (restSubTab = "ferramentas")}
+        class="px-4 py-2 text-sm font-medium transition-colors"
+        class:border-b-2={restSubTab === "ferramentas"}
+        class:border-primary={restSubTab === "ferramentas"}
+        class:text-foreground={restSubTab === "ferramentas"}
+        class:text-muted-foreground={restSubTab !== "ferramentas"}
+      >
+        Ferramentas
+      </button>
+    </div>
+  {/if}
+
   <!-- Config view (posto + restaurante) -->
   {#if showConfig}
     <ConfigPosto />
@@ -161,7 +189,9 @@
     {/if}
   {:else}
     <!-- Restaurante content -->
-    {#if restView === "historico"}
+    {#if restSubTab === "ferramentas"}
+      <Ferramentas />
+    {:else if restView === "historico"}
       <Historico
         tipo="restaurante"
         onNovo={() => showImportacao("restaurante")}

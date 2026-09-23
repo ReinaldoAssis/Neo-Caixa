@@ -7,13 +7,19 @@ Expõe funções síncronas que internamente rodam o loop async do Playwright.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
+import tempfile
 from dataclasses import dataclass, field, asdict
 from typing import Any
 
 CLOUDY_BASE = "https://app.cloudfy.net.br/site"
 LOGIN_URL = f"{CLOUDY_BASE}/#/login"
 CONCILIADOR_URL = f"{CLOUDY_BASE}/#/H02SF0108B"
+
+RELATORIO_DESCONTO_MENU = "Relatório de desconto"
+RELATORIO_POR_CUPOM = "Relatório por cupom"
+FORMA_VENDA_A_PRAZO = "venda a prazo"
 
 
 # ─── Models ────────────────────────────────────────────────────────
@@ -49,6 +55,19 @@ class CaixaDetalhe:
     pagamentos: list[PagamentoCartao] = field(default_factory=list)
 
 
+@dataclass
+class Desconto:
+    tipo: str = ""
+    motivo: str = ""
+    data: str = ""
+    caixa: str = ""
+    cupom: str = ""
+    qtde_itens: str = ""
+    valor: float = 0.0
+    cliente: str = ""
+    forma_pagamento: str = ""
+
+
 # ─── Helpers ───────────────────────────────────────────────────────
 
 def _parse_brl(value: str) -> float:
@@ -58,6 +77,99 @@ def _parse_brl(value: str) -> float:
         return round(float(cleaned), 2)
     except ValueError:
         return 0.0
+
+
+def _cell_str(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _cell_float(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return round(float(value), 2)
+    return _parse_brl(str(value))
+
+
+_HEADER_ALIASES = {
+    "tipo": "tipo",
+    "motivo": "motivo",
+    "data": "data",
+    "caixa": "caixa",
+    "cupom": "cupom",
+    "qtde. itens": "qtde_itens",
+    "qtde itens": "qtde_itens",
+    "valor": "valor",
+    "cliente": "cliente",
+    "forma de pagamento": "forma_pagamento",
+}
+
+
+def _map_header(name: str) -> str | None:
+    normalized = " ".join(str(name or "").strip().lower().split())
+    if normalized in _HEADER_ALIASES:
+        return _HEADER_ALIASES[normalized]
+    if normalized.startswith("qtde"):
+        return "qtde_itens"
+    if normalized.startswith("forma"):
+        return "forma_pagamento"
+    return None
+
+
+def parse_descontos_xlsx(path: str) -> list[dict[str, Any]]:
+    """Le o XLSX exportado pelo Cloudfy e retorna apenas cupons 'Venda a prazo'."""
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    worksheet = workbook.worksheets[0]
+    rows = worksheet.iter_rows(values_only=True)
+
+    header: dict[str, int] = {}
+    parsed: list[dict[str, Any]] = []
+
+    for raw_row in rows:
+        cells = [_cell_str(c) for c in raw_row]
+        if not header:
+            candidate = {
+                field_name: idx
+                for idx, cell in enumerate(cells)
+                if (field_name := _map_header(cell)) is not None
+            }
+            if "cupom" in candidate and "data" in candidate:
+                header = candidate
+            continue
+
+        if not any(cells):
+            continue
+
+        def get(field_name: str) -> Any:
+            idx = header.get(field_name)
+            if idx is None or idx >= len(raw_row):
+                return ""
+            return raw_row[idx]
+
+        forma = _cell_str(get("forma_pagamento"))
+        if forma.strip().lower() != FORMA_VENDA_A_PRAZO:
+            continue
+
+        parsed.append(asdict(Desconto(
+            tipo=_cell_str(get("tipo")),
+            motivo=_cell_str(get("motivo")),
+            data=_cell_str(get("data")),
+            caixa=_cell_str(get("caixa")),
+            cupom=_cell_str(get("cupom")),
+            qtde_itens=_cell_str(get("qtde_itens")),
+            valor=_cell_float(get("valor")),
+            cliente=_cell_str(get("cliente")),
+            forma_pagamento=forma,
+        )))
+
+    workbook.close()
+    return parsed
 
 
 # ─── Scraper Async ─────────────────────────────────────────────────
@@ -488,6 +600,86 @@ class CloudfyScraper:
         detalhe = await self.abrir_detalhes(selecionado)
         return asdict(detalhe)
 
+    # ── Relatório de descontos (download) ──────────────────────
+
+    async def _abrir_relatorio_descontos(self, page) -> None:
+        await page.goto(f"{CLOUDY_BASE}/#/", wait_until="domcontentloaded")
+        await page.wait_for_timeout(3000)
+
+        clicou = await page.evaluate(
+            """
+            (nome) => {
+                const links = Array.from(document.querySelectorAll('a'));
+                let el = links.find(a => a.textContent.trim() === nome);
+                if (!el) el = links.find(a => a.textContent.includes(nome));
+                if (el) { el.click(); return true; }
+                return false;
+            }
+            """,
+            RELATORIO_DESCONTO_MENU,
+        )
+        if not clicou:
+            print("[AVISO] Menu 'Relatorio de desconto' nao encontrado.")
+        await page.wait_for_timeout(4000)
+
+    async def _selecionar_relatorio_por_cupom(self, page) -> None:
+        select = page.locator(".selectize-control .selectize-input")
+        if await select.count() == 0:
+            print("[AVISO] Select de tipo de relatorio nao encontrado.")
+            return
+        await select.first.click()
+        await page.wait_for_timeout(600)
+
+        opcao = page.locator(
+            f'.selectize-dropdown .option:has-text("{RELATORIO_POR_CUPOM}")'
+        )
+        if await opcao.count() == 0:
+            opcao = page.locator(".selectize-dropdown .option", has_text=RELATORIO_POR_CUPOM)
+        if await opcao.count() > 0:
+            await opcao.first.click()
+            await page.wait_for_timeout(1200)
+        else:
+            print("[AVISO] Opcao 'Relatorio por cupom' nao encontrada.")
+
+    async def baixar_relatorio_descontos(self) -> list[dict[str, Any]]:
+        page = self._page
+        context = self._context
+
+        ok = await self.login()
+        if not ok:
+            raise RuntimeError("Falha no login.")
+
+        await self._abrir_relatorio_descontos(page)
+
+        pages = context.pages
+        report_page = pages[-1] if pages else page
+        await report_page.wait_for_load_state("domcontentloaded")
+        await report_page.wait_for_timeout(3000)
+
+        await self._selecionar_relatorio_por_cupom(report_page)
+
+        botao = report_page.locator('a:has-text("Excel")')
+        if await botao.count() == 0:
+            raise RuntimeError("Botao de exportacao Excel nao encontrado.")
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+
+        try:
+            async with report_page.expect_download(timeout=90000) as download_info:
+                await botao.first.click()
+            download = await download_info.value
+            await download.save_as(tmp_path)
+            descontos = parse_descontos_xlsx(tmp_path)
+            print(f"[OK] {len(descontos)} cupons 'Venda a prazo' extraidos.")
+            return descontos
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
 
 # ─── API pública síncrona ──────────────────────────────────────────
 
@@ -544,6 +736,21 @@ def lancar_caixa_cloudfy(
             )
         except Exception as exc:
             return {"erro": str(exc)}
+
+    try:
+        return asyncio.run(_runner())
+    except Exception as exc:
+        return {"erro": str(exc)}
+
+
+def baixar_descontos_cloudfy(login: str, senha: str, debug: bool = False) -> dict:
+    """Baixa o relatorio de descontos (por cupom) do Cloudfy e retorna os
+    cupons do tipo 'Venda a prazo'. Bloqueante."""
+
+    async def _runner():
+        async with CloudfyScraper(login, senha, debug=debug) as scraper:
+            descontos = await scraper.baixar_relatorio_descontos()
+            return {"descontos": descontos, "total": len(descontos)}
 
     try:
         return asyncio.run(_runner())
