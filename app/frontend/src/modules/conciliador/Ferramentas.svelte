@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { BadgePercent, Construction, FileSpreadsheet, Wrench } from "lucide-svelte";
+  import { BadgePercent, Construction, Wallet, Wrench } from "lucide-svelte";
   import GerenciadorDescontos from "./GerenciadorDescontos.svelte";
+  import SaldosCaixa from "./SaldosCaixa.svelte";
 
-  type Ferramenta = "descontos" | null;
+  type Ferramenta = "descontos" | "saldos" | null;
 
   let ativa = $state<Ferramenta>(null);
 
@@ -15,11 +16,11 @@
       enabled: true,
     },
     {
-      id: "placeholder-1",
-      label: "Em breve",
-      descricao: "Nova ferramenta de restaurante.",
-      icon: FileSpreadsheet,
-      enabled: false,
+      id: "saldos",
+      label: "Saldos de caixa",
+      descricao: "Acompanhe o saldo devedor das atendentes por quebra de caixa.",
+      icon: Wallet,
+      enabled: true,
     },
     {
       id: "placeholder-2",
@@ -40,6 +41,8 @@
 
 {#if ativa === "descontos"}
   <GerenciadorDescontos onVoltar={() => (ativa = null)} />
+{:else if ativa === "saldos"}
+  <SaldosCaixa onVoltar={() => (ativa = null)} />
 {:else}
   <div class="flex h-full flex-col overflow-auto">
     <div class="border-b px-4 py-3">
@@ -54,7 +57,7 @@
         <button
           type="button"
           disabled={!f.enabled}
-          onclick={() => { if (f.id === "descontos") ativa = "descontos"; }}
+          onclick={() => { if (f.enabled) ativa = f.id as Ferramenta; }}
           class="flex flex-col items-start gap-3 rounded-lg border p-6 text-left transition-colors"
           class:hover:bg-accent={f.enabled}
           class:cursor-pointer={f.enabled}

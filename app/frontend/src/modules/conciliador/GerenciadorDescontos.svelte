@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { ArrowLeft, Check, Loader2, RefreshCw, Search } from "lucide-svelte";
+  import { ArrowLeft, Check, Loader2, RefreshCw, Search, Trash2 } from "lucide-svelte";
 
   interface Desconto {
     _id: string;
@@ -33,6 +33,34 @@
   let filtroCupom = $state("");
   let filtroCliente = $state("");
   let filtroMotivo = $state("");
+
+  let menu = $state<{ x: number; y: number; d: Desconto } | null>(null);
+
+  function abrirMenu(event: MouseEvent, d: Desconto) {
+    event.preventDefault();
+    menu = { x: event.clientX, y: event.clientY, d };
+  }
+
+  function fecharMenu() {
+    menu = null;
+  }
+
+  async function excluir(d: Desconto) {
+    fecharMenu();
+    if (!confirm(`Excluir o cupom ${d.cupom} (${d.data})?`)) return;
+    descontos = descontos.filter((item) => item._id !== d._id);
+    try {
+      const res = await fetch(
+        `/api/conciliador/descontos/${encodeURIComponent(d._id)}`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) {
+        await load();
+      }
+    } catch {
+      await load();
+    }
+  }
 
   onMount(load);
 
@@ -133,6 +161,11 @@
   }
 </script>
 
+<svelte:window
+  onclick={fecharMenu}
+  onkeydown={(e) => { if (e.key === "Escape") fecharMenu(); }}
+/>
+
 <div class="flex h-full flex-col overflow-hidden">
   <div class="flex items-center gap-3 border-b px-4 py-3">
     <button
@@ -229,6 +262,7 @@
               class="cursor-pointer border-b hover:bg-accent/50"
               class:bg-green-50={d.conferido}
               onclick={() => toggle(d)}
+              oncontextmenu={(e) => abrirMenu(e, d)}
             >
               <td class="px-3 py-2">{d.tipo}</td>
               <td class="px-3 py-2">{d.motivo}</td>
@@ -264,3 +298,24 @@
     <span class="ml-auto font-medium text-foreground">Total: {formatMoney(totalValor)}</span>
   </div>
 </div>
+
+{#if menu}
+  <div
+    class="fixed z-50 min-w-40 rounded-md border bg-background py-1 shadow-lg"
+    style="left: {menu.x}px; top: {menu.y}px;"
+    onclick={(e) => e.stopPropagation()}
+    role="menu"
+  >
+    <div class="border-b px-3 py-1.5 text-xs text-muted-foreground">
+      Cupom {menu.d.cupom} - {menu.d.data}
+    </div>
+    <button
+      type="button"
+      class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+      onclick={() => excluir(menu.d)}
+    >
+      <Trash2 class="h-4 w-4" />
+      Excluir
+    </button>
+  </div>
+{/if}

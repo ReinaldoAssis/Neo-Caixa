@@ -51,6 +51,15 @@ from app.modules.conciliador.descontos import (
     list_descontos,
     toggle_conferido,
     upsert_descontos,
+    delete_desconto,
+)
+from app.modules.conciliador.saldos import (
+    criar_funcionario,
+    remover_funcionario,
+    listar_funcionarios,
+    criar_lancamento,
+    listar_lancamentos,
+    remover_lancamento,
 )
 
 router = APIRouter(prefix="/api/conciliador", tags=["Conciliador"])
@@ -655,6 +664,55 @@ async def descontos_toggle(desconto_id: str):
     if not doc:
         raise HTTPException(status_code=404, detail="Desconto nao encontrado")
     return doc
+
+
+@router.delete("/descontos/{desconto_id}")
+async def descontos_delete(desconto_id: str):
+    if not delete_desconto(app_context.database, desconto_id):
+        raise HTTPException(status_code=404, detail="Desconto nao encontrado")
+    return {"deleted": True}
+
+
+# ─── Saldos de caixa ────────────────────────────────────────────
+
+@router.get("/saldos/funcionarios")
+async def saldos_funcionarios_listar():
+    return listar_funcionarios(app_context.database)
+
+
+@router.post("/saldos/funcionarios")
+async def saldos_funcionarios_criar(data: dict):
+    try:
+        return criar_funcionario(app_context.database, data.get("nome", ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.delete("/saldos/funcionarios/{funcionario_id}")
+async def saldos_funcionarios_remover(funcionario_id: str):
+    if not remover_funcionario(app_context.database, funcionario_id):
+        raise HTTPException(status_code=404, detail="Funcionario nao encontrado")
+    return {"deleted": True}
+
+
+@router.get("/saldos/funcionarios/{funcionario_id}/lancamentos")
+async def saldos_lancamentos_listar(funcionario_id: str):
+    return listar_lancamentos(app_context.database, funcionario_id)
+
+
+@router.post("/saldos/lancamentos")
+async def saldos_lancamentos_criar(data: dict):
+    try:
+        return criar_lancamento(app_context.database, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.delete("/saldos/lancamentos/{lancamento_id}")
+async def saldos_lancamentos_remover(lancamento_id: str):
+    if not remover_lancamento(app_context.database, lancamento_id):
+        raise HTTPException(status_code=404, detail="Lancamento nao encontrado")
+    return {"deleted": True}
 
 
 # ─── Validação de contagens ──────────────────────────────────────

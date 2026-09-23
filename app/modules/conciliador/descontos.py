@@ -148,3 +148,9 @@ def toggle_conferido(database, doc_id: str) -> dict[str, Any] | None:
     doc["atualizado_em"] = _now()
     database.update(TABLE, doc_id, doc)
     return dict(doc, _id=_doc_id(doc))
+
+
+def delete_desconto(database, doc_id: str) -> bool:
+    if not database.get(TABLE, doc_id):
+        return False
+    return database.delete(TABLE, doc_id)
