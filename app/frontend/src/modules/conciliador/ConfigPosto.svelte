@@ -30,7 +30,9 @@
   let financeiroOrigem = $state("CAIXA ADM");
   let financeiroDestino = $state("MOEDAS");
   let financeiroDescricaoMoedas = $state("MOEDAS");
-  let financeiroCategoria = $state("02.03.01 Fornecedores");
+  type CategoriaFinanceiro = { codigo: string; descricao: string };
+  let financeiroCategorias = $state<CategoriaFinanceiro[]>([]);
+  let financeiroCategoriaPadrao = $state("54");
   let financeiroConta = $state("CAIXA ADM");
   let financeiroCentroCusto = $state("LAGOA CAFE CONVENIENCIA");
   let financeiroTipoDocumento = $state("DINHEIRO");
@@ -162,7 +164,15 @@
         financeiroOrigem = s.financeiro_origem || "CAIXA ADM";
         financeiroDestino = s.financeiro_destino || "MOEDAS";
         financeiroDescricaoMoedas = s.financeiro_descricao_moedas || "MOEDAS";
-        financeiroCategoria = s.financeiro_categoria || "02.03.01 Fornecedores";
+        financeiroCategorias = Array.isArray(s.financeiro_categorias)
+          ? s.financeiro_categorias
+              .filter((c: any) => c && c.codigo && c.descricao)
+              .map((c: any) => ({
+                codigo: String(c.codigo),
+                descricao: String(c.descricao),
+              }))
+          : [];
+        financeiroCategoriaPadrao = s.financeiro_categoria_padrao || "54";
         financeiroConta = s.financeiro_conta || "CAIXA ADM";
         financeiroCentroCusto = s.financeiro_centro_custo || "LAGOA CAFE CONVENIENCIA";
         financeiroTipoDocumento = s.financeiro_tipo_documento || "DINHEIRO";
@@ -239,9 +249,55 @@
     }
   }
 
+  function addCategoriaFinanceiro() {
+    financeiroCategorias = [
+      ...financeiroCategorias,
+      { codigo: "", descricao: "" },
+    ];
+  }
+
+  function removeCategoriaFinanceiro(index: number) {
+    const categoria = financeiroCategorias[index];
+    if (categoria?.codigo === financeiroCategoriaPadrao) {
+      flash("Troque a categoria padrao antes de remover esta categoria.", "err");
+      return;
+    }
+    financeiroCategorias = financeiroCategorias.filter((_, i) => i !== index);
+  }
+
+  function categoriasParaSalvar(): CategoriaFinanceiro[] {
+    const categorias = financeiroCategorias.map((c) => ({
+      codigo: String(c.codigo ?? "").trim(),
+      descricao: String(c.descricao ?? "").trim().replace(/\s+/g, " "),
+    }));
+    if (!categorias.length) {
+      throw new Error("Informe pelo menos uma categoria de despesa.");
+    }
+    const vistos = new Set<string>();
+    categorias.forEach((categoria, indice) => {
+      if (!/^\d+$/.test(categoria.codigo)) {
+        throw new Error(`Categoria ${indice + 1}: codigo deve ser inteiro.`);
+      }
+      if (!categoria.descricao) {
+        throw new Error(`Categoria ${indice + 1}: informe a descricao.`);
+      }
+      if (vistos.has(categoria.codigo)) {
+        throw new Error(`Codigo de categoria duplicado: ${categoria.codigo}.`);
+      }
+      vistos.add(categoria.codigo);
+    });
+    if (!vistos.has(financeiroCategoriaPadrao)) {
+      throw new Error(
+        "A categoria padrao deve existir na lista. Troque o padrao antes de remover.",
+      );
+    }
+    return categorias;
+  }
+
   async function saveFinanceiro() {
     savingFinanceiro = true;
     try {
+      const categorias = categoriasParaSalvar();
       const res = await fetch("/api/conciliador/config/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -249,14 +305,21 @@
           financeiro_origem: financeiroOrigem,
           financeiro_destino: financeiroDestino,
           financeiro_descricao_moedas: financeiroDescricaoMoedas,
-          financeiro_categoria: financeiroCategoria,
+          financeiro_categorias: categorias,
+          financeiro_categoria_padrao: financeiroCategoriaPadrao,
           financeiro_conta: financeiroConta,
           financeiro_centro_custo: financeiroCentroCusto,
           financeiro_tipo_documento: financeiroTipoDocumento,
           financeiro_fornecedor: financeiroFornecedor,
         }),
       });
-      if (!res.ok) throw new Error("Erro ao salvar configuracoes do financeiro");
+      if (!res.ok) {
+        const corpo = await res.json().catch(() => ({}));
+        throw new Error(
+          corpo.detail || "Erro ao salvar configuracoes do financeiro",
+        );
+      }
+      financeiroCategorias = categorias;
       flash("Configuracoes do financeiro salvas.");
     } catch (e: any) {
       flash(e.message, "err");
@@ -728,14 +791,6 @@
               />
             </label>
             <label class="text-sm">
-              <span class="mb-1 block text-muted-foreground">Categoria da despesa</span>
-              <input
-                type="text"
-                bind:value={financeiroCategoria}
-                class="w-full rounded-md border bg-background px-3 py-1.5 text-sm"
-              />
-            </label>
-            <label class="text-sm">
               <span class="mb-1 block text-muted-foreground">Conta da despesa</span>
               <input
                 type="text"
@@ -767,6 +822,72 @@
                 placeholder="Opcional; preencha se o Cloudfy exigir"
                 class="w-full rounded-md border bg-background px-3 py-1.5 text-sm"
               />
+            </label>
+          </div>
+
+          <div class="mt-4 rounded-md border bg-muted/20 p-3">
+            <div class="mb-1 flex flex-wrap items-center gap-2">
+              <p class="text-sm font-medium">Categorias de despesa (Tipo)</p>
+              <button
+                type="button"
+                onclick={addCategoriaFinanceiro}
+                class="ml-auto inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-accent"
+              >
+                Adicionar categoria
+              </button>
+            </div>
+            <p class="mb-2 text-xs text-muted-foreground">
+              Codigo do Cloudfy e descricao procurada no selectize. A categoria
+              padrao e usada nas notas novas.
+            </p>
+            {#if financeiroCategorias.length === 0}
+              <p class="text-sm text-amber-700">
+                Nenhuma categoria configurada.
+              </p>
+            {/if}
+            <div class="space-y-2">
+              {#each financeiroCategorias as categoria, indice}
+                <div class="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    inputmode="numeric"
+                    bind:value={categoria.codigo}
+                    placeholder="Codigo"
+                    class="w-20 rounded-md border bg-background px-2 py-1 text-sm"
+                  />
+                  <input
+                    type="text"
+                    bind:value={categoria.descricao}
+                    placeholder="Descricao (ex.: 02.03.01 Fornecedores)"
+                    class="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onclick={() => removeCategoriaFinanceiro(indice)}
+                    disabled={categoria.codigo === financeiroCategoriaPadrao}
+                    class="text-xs text-red-600 hover:underline disabled:opacity-40"
+                  >
+                    Remover
+                  </button>
+                </div>
+              {/each}
+            </div>
+            <label class="mt-3 block text-sm">
+              <span class="mb-1 block text-muted-foreground">
+                Categoria padrao de nota nova
+              </span>
+              <select
+                bind:value={financeiroCategoriaPadrao}
+                class="w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+              >
+                {#each financeiroCategorias as categoria}
+                  {#if categoria.codigo}
+                    <option value={categoria.codigo}>
+                      {categoria.codigo} - {categoria.descricao}
+                    </option>
+                  {/if}
+                {/each}
+              </select>
             </label>
           </div>
           <button

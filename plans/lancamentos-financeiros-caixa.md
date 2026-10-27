@@ -40,7 +40,8 @@ A ferramenta "checar caixa adm" citada na conversa fica **fora de escopo**.
 
 `conciliacoes` (restaurante):
 
-- `despesas_notas: [{id, descricao, valor, legado?}]` (topo, caixa não dividido)
+- `despesas_notas: [{id, descricao, valor, tipo_codigo, tipo_descricao, legado?}]`
+  (topo, caixa não dividido)
 - `turnos["1"|"2"].despesas_notas` (caixa dividido)
 - `dinheiro_ajuste` continua existindo como **soma** das notas (compatibilidade
   com export/resultado/testes)
@@ -52,6 +53,7 @@ A ferramenta "checar caixa adm" citada na conversa fica **fora de escopo**.
 {
   chave, tipo: "transferencia_moedas" | "despesa",
   caixa_id, turno, nota_id,
+  tipo_codigo, tipo_descricao,
   data, descricao, valor,
   status: "lancado" | "erro",
   erro, criado_em, atualizado_em, lancado_em
@@ -154,7 +156,18 @@ Complementares em vez de "ajuste manual".
 financeiro_origem = "CAIXA ADM"
 financeiro_destino = "MOEDAS"
 financeiro_descricao_moedas = "MOEDAS"
-financeiro_categoria = "02.03.01 Fornecedores"
+financeiro_categorias = [
+  {codigo: "78", descricao: "02.04.23 Vale Transporte"},
+  {codigo: "54", descricao: "02.03.01 Fornecedores"},
+  {codigo: "56", descricao: "02.04.01 Adiantamento Salarial"},
+  {codigo: "74", descricao: "02.04.19 Salarios / Remuneracoes"},
+  {codigo: "79", descricao: "02.04.99 Outras Despesas c/ Pessoal"},
+  {codigo: "115", descricao: "02.08.99 Outras Despesas Operacionais"},
+  {codigo: "151", descricao: "02.12.99 Outras Despesas c/ Reposicoes"},
+  {codigo: "145", descricao: "02.11.99 Outras Despesas c/ Manutencoes"},
+  {codigo: "163", descricao: "02.99 SNOP - OUTRAS SAIDAS NAO OPERACIONAIS"},
+]
+financeiro_categoria_padrao = "54"
 financeiro_conta = "CAIXA ADM"
 financeiro_centro_custo = "LAGOA CAFE CONVENIENCIA"
 financeiro_tipo_documento = "DINHEIRO"
@@ -226,3 +239,34 @@ algum campo obrigatório (ex.: fornecedor) precisa de configuração.
    continua na mesma página.
 8. Se Nr. documento/Dt. documento forem obrigatórios no Cloudfy, o formulário
    falha; avaliar preencher com um valor padrão configurável.
+
+## Correção 2026-10-27 — menu "Novo" + Tipo por nota
+
+Sintoma: no Cloudfy real os botões "Novo pagamento"/"Nova transferência" não
+aparecem; ficam dentro do menu que só abre no hover do `<button class="md-btn">
+Novo</button>`.
+
+Decisões (grilling 2026-10-27):
+
+| Tema | Decisão |
+| --- | --- |
+| Abrir menu | hover no botão Novo → esperar a opção visível → clicar; fallback clique no Novo |
+| Prontidão | `JS_FINANCEIRO_PRONTO` espera o botão Novo visível, não os `<a>` ocultos |
+| Tipo | nova coluna por nota: `tipo_codigo` + snapshot `tipo_descricao` |
+| Config | lista editável `financeiro_categorias` (9 defaults) + `financeiro_categoria_padrao = "54"` |
+| Validação | código inteiro único, descrição obrigatória, padrão não removível sem trocar |
+| Legado | nota sem tipo assume 54 Fornecedores |
+| Precedência | config atual pelo código; snapshot só se a categoria foi removida |
+| Pós-lançado | tipo bloqueado; não divergir do que já está no Cloudfy |
+| UI | select no card de notas; modal de revisão só mostra |
+| Relatórios | `54 - 02.03.01 Fornecedores: GAS: R$ 30,00` no Resultado/export |
+| Histórico | `lancamentos_financeiros` grava e exibe tipo/código |
+
+Automação: `_hover_novo`, `_opcao_novo_visivel`, `_abrir_menu_novo` e
+`_abrir_modal_financeiro` com hover; categoria resolvida por
+`resolver_categoria` e selecionada por descrição com fallback `codigo : descricao`,
+`codigo - descricao` e código puro.
+
+Verificação: `pytest -q` **68 passed**; `npm run build` OK; `svelte-check` mantém
+os 4 erros antigos; `scripts/smoke_financeiro.py` cobre menu oculto até hover e
+categoria 115 por item.

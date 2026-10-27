@@ -19,7 +19,11 @@ from dataclasses import dataclass, field, asdict
 from typing import Any
 
 from app.core.logger import logger
-from app.modules.conciliador.financeiro import TIPO_DESPESA, TIPO_MOEDAS
+from app.modules.conciliador.financeiro import (
+    TIPO_DESPESA,
+    TIPO_MOEDAS,
+    resolver_categoria,
+)
 
 CLOUDY_BASE = "https://app.cloudfy.net.br/site"
 LOGIN_URL = f"{CLOUDY_BASE}/#/login"
@@ -543,32 +547,51 @@ JS_CLICAR_MENU = """
 """
 
 JS_FINANCEIRO_PRONTO = """
-() => !!document.querySelector('a[ng-click="onNovoPagamento()"]')
-    && !!document.querySelector('a[ng-click="onNovaTransferencia()"]')
+() => Array.from(document.querySelectorAll('button.md-btn')).some((b) => {
+    const t = (b.textContent || '').replace(/\\s+/g, ' ').trim().toUpperCase();
+    const visivel = !!(b.offsetWidth || b.offsetHeight || b.getClientRects().length);
+    return visivel && t.startsWith('NOVO');
+})
 """
 
 JS_SELECT_OPTION = """
-({skn, texto}) => {
+({skn, textos}) => {
     const w = document.querySelector(`[skn-id="${skn}"]`);
     if (!w) return false;
-    const alvo = String(texto || '').replace(/\\s+/g, ' ').trim().toUpperCase();
-    if (!alvo) return false;
+    const alvos = (Array.isArray(textos) ? textos : [textos])
+        .map((t) => String(t || '').replace(/\\s+/g, ' ').trim().toUpperCase())
+        .filter(Boolean);
+    if (!alvos.length) return false;
     return Array.from(w.querySelectorAll('.selectize-dropdown .option')).some(o => {
         const t = (o.textContent || '').replace(/\\s+/g, ' ').trim().toUpperCase();
-        return t === alvo || t.endsWith(' : ' + alvo) || t.includes(alvo);
+        return alvos.some((alvo) => (
+            t === alvo
+            || t.endsWith(' : ' + alvo)
+            || t.endsWith(' - ' + alvo)
+            || t.startsWith(alvo + ' : ')
+            || t.startsWith(alvo + ' - ')
+            || t.includes(alvo)
+        ));
     });
 }
 """
 
 JS_SELECT_SELECIONADO = """
-({skn, texto}) => {
+({skn, textos}) => {
     const w = document.querySelector(`[skn-id="${skn}"]`);
     if (!w) return false;
-    const alvo = String(texto || '').replace(/\\s+/g, ' ').trim().toUpperCase();
-    if (!alvo) return false;
+    const alvos = (Array.isArray(textos) ? textos : [textos])
+        .map((t) => String(t || '').replace(/\\s+/g, ' ').trim().toUpperCase())
+        .filter(Boolean);
+    if (!alvos.length) return false;
     return Array.from(w.querySelectorAll('.selectize-input .item')).some(i => {
         const t = (i.textContent || '').replace(/\\s+/g, ' ').trim().toUpperCase();
-        return t === alvo || t.endsWith(' : ' + alvo) || t.includes(alvo);
+        return alvos.some((alvo) => (
+            t === alvo
+            || t.endsWith(' : ' + alvo)
+            || t.endsWith(' - ' + alvo)
+            || t.includes(alvo)
+        ));
     });
 }
 """
@@ -1086,12 +1109,40 @@ def _opcao_score(opcao: str, alvo: str) -> int:
         return 0
     if o.endswith(" : " + a) or o.endswith(": " + a):
         return 1
+    if a.isdigit():
+        if (
+            o.startswith(a + " : ")
+            or o.startswith(a + " - ")
+            or o.startswith(a + " ")
+        ):
+            return 1
+        return -1
     if a in o:
         return 2
     return -1
 
 
-async def _clicar_melhor_opcao(wrapper, texto: str, timeout_ms: int = TIMEOUT_SELECT_MS) -> bool:
+def _textos_unicos(texto: str, alternativas: tuple[str, ...] | list[str] = ()) -> list[str]:
+    out: list[str] = []
+    vistos: set[str] = set()
+    for candidato in (texto, *alternativas):
+        valor = " ".join(str(candidato or "").split()).strip()
+        if not valor or valor.upper() in vistos:
+            continue
+        vistos.add(valor.upper())
+        out.append(valor)
+    return out
+
+
+def _melhor_score(opcao: str, textos: list[str]) -> int:
+    scores = [_opcao_score(opcao, texto) for texto in textos]
+    validos = [score for score in scores if score >= 0]
+    return min(validos) if validos else -1
+
+
+async def _clicar_melhor_opcao(
+    wrapper, textos: list[str], timeout_ms: int = TIMEOUT_SELECT_MS
+) -> bool:
     opcoes = wrapper.locator(".selectize-dropdown .option")
     try:
         await opcoes.first.wait_for(state="attached", timeout=timeout_ms)
@@ -1106,7 +1157,7 @@ async def _clicar_melhor_opcao(wrapper, texto: str, timeout_ms: int = TIMEOUT_SE
         try:
             if not await opcao.is_visible():
                 continue
-            score = _opcao_score(await opcao.inner_text(), texto)
+            score = _melhor_score(await opcao.inner_text(), textos)
         except Exception:
             continue
         if score < 0:
@@ -1123,21 +1174,26 @@ async def _clicar_melhor_opcao(wrapper, texto: str, timeout_ms: int = TIMEOUT_SE
     return True
 
 
-async def _confirmar_selecao(page, skn_id: str, texto: str) -> None:
+async def _confirmar_selecao(page, skn_id: str, textos: list[str]) -> None:
     try:
         await page.wait_for_function(
             JS_SELECT_SELECIONADO,
-            arg={"skn": skn_id, "texto": texto},
+            arg={"skn": skn_id, "textos": textos},
             timeout=TIMEOUT_SELECT_MS,
         )
     except Exception:
         pass
 
 
-async def _selecionar_opcao(modal, skn_id: str, texto: str) -> None:
-    """Seleciona uma opção de selectize pelo texto (código ou descrição)."""
-    texto = str(texto or "").strip()
-    if not texto:
+async def _selecionar_opcao(
+    modal,
+    skn_id: str,
+    texto: str,
+    alternativas: tuple[str, ...] | list[str] = (),
+) -> None:
+    """Seleciona uma opção de selectize por texto (código ou descrição)."""
+    textos = _textos_unicos(texto, alternativas)
+    if not textos:
         return
     wrapper = modal.locator(f'[skn-id="{skn_id}"]').first
     await wrapper.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
@@ -1145,7 +1201,7 @@ async def _selecionar_opcao(modal, skn_id: str, texto: str) -> None:
 
     try:
         atual = await wrapper.locator(".selectize-input").first.inner_text()
-        if _opcao_score(atual, texto) >= 0:
+        if _melhor_score(atual, textos) >= 0:
             return
     except Exception:
         pass
@@ -1156,35 +1212,35 @@ async def _selecionar_opcao(modal, skn_id: str, texto: str) -> None:
     try:
         await page.wait_for_function(
             JS_SELECT_OPTION,
-            arg={"skn": skn_id, "texto": texto},
+            arg={"skn": skn_id, "textos": textos},
             timeout=TIMEOUT_SELECT_MS,
         )
     except Exception:
         pass
 
-    if await _clicar_melhor_opcao(wrapper, texto):
-        await _confirmar_selecao(page, skn_id, texto)
+    if await _clicar_melhor_opcao(wrapper, textos):
+        await _confirmar_selecao(page, skn_id, textos)
         return
 
-    # Filtra digitando o texto no selectize e tenta novamente.
+    # Filtra digitando o texto principal no selectize e tenta novamente.
     try:
-        await page.keyboard.type(texto, delay=15)
+        await page.keyboard.type(textos[0], delay=15)
     except Exception:
         pass
     try:
         await page.wait_for_function(
             JS_SELECT_OPTION,
-            arg={"skn": skn_id, "texto": texto},
+            arg={"skn": skn_id, "textos": textos},
             timeout=TIMEOUT_CURTO_MS,
         )
     except Exception:
         pass
-    if await _clicar_melhor_opcao(wrapper, texto, TIMEOUT_CURTO_MS):
-        await _confirmar_selecao(page, skn_id, texto)
+    if await _clicar_melhor_opcao(wrapper, textos, TIMEOUT_CURTO_MS):
+        await _confirmar_selecao(page, skn_id, textos)
         return
 
     raise RuntimeError(
-        f"Opcao '{texto}' nao encontrada no campo {skn_id} do financeiro."
+        f"Opcao '{textos[0]}' nao encontrada no campo {skn_id} do financeiro."
     )
 
 
@@ -1221,10 +1277,61 @@ async def _toggle_pagar_conta(modal) -> None:
     await expect(campo).to_be_enabled(timeout=TIMEOUT_CURTO_MS)
 
 
+async def _hover_novo(page):
+    """Abre o menu 'Novo' do financeiro (ele só aparece no hover)."""
+    botoes = page.locator('button.md-btn:has-text("Novo")')
+    total = await botoes.count()
+    for posicao in range(total):
+        botao = botoes.nth(posicao)
+        try:
+            if await botao.is_visible():
+                await botao.hover()
+                return botao
+        except Exception:
+            continue
+    raise RuntimeError(
+        "Botao 'Novo' do gerenciador financeiro nao encontrado."
+    )
+
+
+async def _opcao_novo_visivel(
+    page, ng_click: str, timeout_ms: int = TIMEOUT_SELECT_MS
+) -> bool:
+    try:
+        await page.locator(
+            f'a[ng-click="{ng_click}"]:visible'
+        ).first.wait_for(state="visible", timeout=timeout_ms)
+        return True
+    except Exception:
+        return False
+
+
+async def _abrir_menu_novo(page, ng_click: str):
+    botao = await _hover_novo(page)
+    if await _opcao_novo_visivel(page, ng_click):
+        return botao
+
+    # Fallback: em algumas versões o clique no 'Novo' também abre o menu.
+    try:
+        await botao.click()
+        await botao.hover()
+    except Exception:
+        pass
+    if await _opcao_novo_visivel(page, ng_click):
+        return botao
+
+    raise RuntimeError(
+        "Menu 'Novo' do financeiro nao exibiu a opcao "
+        f"'{ng_click}'. Confira se o hover no botao Novo esta funcionando."
+    )
+
+
 async def _abrir_modal_financeiro(page, ng_click: str, controller: str):
-    botao = page.locator(f'a[ng-click="{ng_click}"]:visible').first
-    await botao.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
-    await botao.click()
+    alvo = page.locator(f'a[ng-click="{ng_click}"]:visible').first
+    if await alvo.count() == 0:
+        await _abrir_menu_novo(page, ng_click)
+    await alvo.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
+    await alvo.click()
 
     modal = page.locator(f'main[ng-controller="{controller}"]:visible').last
     await modal.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
@@ -1295,8 +1402,24 @@ async def abrir_financeiro(page, usuario: str, senha: str) -> None:
     except Exception as exc:
         raise RuntimeError(
             "Gerenciador financeiro do Cloudfy nao carregou "
-            "(botoes 'Novo pagamento'/'Nova transferencia' ausentes)."
+            "(botao 'Novo' ausente)."
         ) from exc
+
+    await _hover_novo(page)
+    faltando: list[str] = []
+    for ng_click in ("onNovoPagamento()", "onNovaTransferencia()"):
+        if await _opcao_novo_visivel(page, ng_click):
+            continue
+        try:
+            await _abrir_menu_novo(page, ng_click)
+        except RuntimeError:
+            faltando.append(ng_click)
+    if faltando:
+        raise RuntimeError(
+            "Menu 'Novo' do financeiro abriu sem as opcoes: "
+            + ", ".join(faltando)
+            + "."
+        )
     _marcar("financeiro.tela", inicio)
 
 
@@ -1320,6 +1443,27 @@ async def lancar_transferencia_financeira(
     await _salvar_modal_financeiro(page, modal, dialogos)
 
 
+async def _selecionar_categoria_financeira(
+    modal, item: dict[str, Any], config: dict
+) -> None:
+    codigo, descricao = resolver_categoria(
+        item.get("tipo_codigo"),
+        item.get("tipo_descricao"),
+        config,
+    )
+    alternativas = [
+        f"{codigo} : {descricao}",
+        f"{codigo} - {descricao}",
+        codigo,
+    ]
+    await _selecionar_opcao(
+        modal,
+        SKN_CATEGORIA,
+        descricao,
+        alternativas,
+    )
+
+
 async def lancar_pagamento_financeiro(
     page, item: dict[str, Any], config: dict, dialogos: list[str]
 ) -> None:
@@ -1331,9 +1475,7 @@ async def lancar_pagamento_financeiro(
     await _preencher_campo(modal, SKN_DT_VENC, _data_br(item.get("data")))
     await _toggle_pagar_conta(modal)
     await _preencher_campo(modal, SKN_DT_PAGAMENTO, _data_br(item.get("data")))
-    await _selecionar_opcao(
-        modal, SKN_CATEGORIA, config.get("financeiro_categoria") or "02.03.01 Fornecedores"
-    )
+    await _selecionar_categoria_financeira(modal, item, config)
     await _selecionar_opcao(
         modal, SKN_CONTA, config.get("financeiro_conta") or "CAIXA ADM"
     )

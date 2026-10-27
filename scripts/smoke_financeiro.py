@@ -25,7 +25,12 @@ CONFIG = {
     "financeiro_origem": "CAIXA ADM",
     "financeiro_destino": "MOEDAS",
     "financeiro_descricao_moedas": "MOEDAS",
-    "financeiro_categoria": "02.03.01 Fornecedores",
+    "financeiro_categorias": [
+        {"codigo": "78", "descricao": "02.04.23 Vale Transporte"},
+        {"codigo": "54", "descricao": "02.03.01 Fornecedores"},
+        {"codigo": "115", "descricao": "02.08.99 Outras Despesas Operacionais"},
+    ],
+    "financeiro_categoria_padrao": "54",
     "financeiro_conta": "CAIXA ADM",
     "financeiro_centro_custo": "LAGOA CAFE CONVENIENCIA",
     "financeiro_tipo_documento": "DINHEIRO",
@@ -48,6 +53,8 @@ ITENS = [
         "data": "2026-10-27",
         "turno": None,
         "nota_id": "n1",
+        "tipo_codigo": "115",
+        "tipo_descricao": "02.08.99 Outras Despesas Operacionais",
     },
 ]
 
@@ -64,6 +71,11 @@ async def main() -> int:
 
         await page.goto(FIXTURE.as_uri())
         await page.wait_for_function(ops.JS_FINANCEIRO_PRONTO)
+        await ops._hover_novo(page)
+        for ng_click in ("onNovoPagamento()", "onNovaTransferencia()"):
+            if not await ops._opcao_novo_visivel(page, ng_click):
+                print(f"Opcao {ng_click} nao apareceu no hover.", file=sys.stderr)
+                return 1
 
         resultado = await ops.executar_lancamentos_financeiros(page, ITENS, CONFIG)
         dados = await page.evaluate("() => window.__lancamentos")
@@ -93,7 +105,7 @@ async def main() -> int:
         and pagamento["vencimento"] == "27/10/2026"
         and pagamento["pagou"] is True
         and pagamento["pagamento"] == "27/10/2026"
-        and "02.03.01 Fornecedores" in pagamento["categoria"]
+        and "02.08.99 Outras Despesas Operacionais" in pagamento["categoria"]
         and "CAIXA ADM" in pagamento["conta"]
         and "LAGOA CAFE CONVENIENCIA" in pagamento["centro"]
         and "DINHEIRO" in pagamento["tipo_doc"]

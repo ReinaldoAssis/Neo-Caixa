@@ -227,6 +227,12 @@
     return `R$ ${formatted.replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
   }
 
+  function categoriaNota(nota: any): string {
+    const codigo = String(nota?.tipo_codigo || "54");
+    const descricao = String(nota?.tipo_descricao || "02.03.01 Fornecedores");
+    return `${codigo} - ${descricao}`;
+  }
+
   function formatDate(iso: string): string {
     if (!iso) return "-";
     const [y, m, d] = iso.split("-");
@@ -503,7 +509,7 @@
               {#each turnoRows as tr}
                 {#each tr.notas || [] as nota}
                   <p class="text-sm">
-                    Turno {tr.turno} - {nota.descricao}: {formatMoney(Number(nota.valor || 0))}
+                    Turno {tr.turno} - {categoriaNota(nota)}: {nota.descricao}: {formatMoney(Number(nota.valor || 0))}
                   </p>
                 {/each}
               {/each}
@@ -514,7 +520,7 @@
             <h3 class="mb-2 font-semibold">Informacoes Complementares</h3>
             {#each caixa.despesas_notas as nota}
               <p class="text-sm">
-                {nota.descricao}: {formatMoney(Number(nota.valor || 0))}
+                {categoriaNota(nota)}: {nota.descricao}: {formatMoney(Number(nota.valor || 0))}
               </p>
             {/each}
           </div>

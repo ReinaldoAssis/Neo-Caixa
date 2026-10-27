@@ -119,6 +119,14 @@ def generate_conciliation_pdf_bytes(caixa: dict, posto_config: dict | None = Non
             story.append(_styled_table(table_data))
 
             ajustes: list[str] = []
+
+            def _nota_com_tipo(nota: dict) -> tuple[str, str]:
+                codigo = str(nota.get("tipo_codigo") or "54")
+                descricao_tipo = str(
+                    nota.get("tipo_descricao") or "02.03.01 Fornecedores"
+                )
+                return codigo, descricao_tipo
+
             turnos = caixa.get("turnos") or {}
             if turnos:
                 for numero in ("1", "2"):
@@ -127,16 +135,21 @@ def generate_conciliation_pdf_bytes(caixa: dict, posto_config: dict | None = Non
                         valor_nota = float(nota.get("valor", 0) or 0)
                         if valor_nota:
                             descricao = str(nota.get("descricao") or "DESPESA")
+                            codigo, descricao_tipo = _nota_com_tipo(nota)
                             ajustes.append(
-                                f"Turno {numero} - {descricao}: "
-                                f"{format_money(valor_nota)}"
+                                f"Turno {numero} - {codigo} - {descricao_tipo}: "
+                                f"{descricao}: {format_money(valor_nota)}"
                             )
             else:
                 for nota in caixa.get("despesas_notas") or []:
                     valor_nota = float(nota.get("valor", 0) or 0)
                     if valor_nota:
                         descricao = str(nota.get("descricao") or "DESPESA")
-                        ajustes.append(f"{descricao}: {format_money(valor_nota)}")
+                        codigo, descricao_tipo = _nota_com_tipo(nota)
+                        ajustes.append(
+                            f"{codigo} - {descricao_tipo}: {descricao}: "
+                            f"{format_money(valor_nota)}"
+                        )
 
             if not ajustes:
                 ajuste_total = float(caixa.get("dinheiro_ajuste", 0) or 0)

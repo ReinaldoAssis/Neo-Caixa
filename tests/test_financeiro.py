@@ -237,10 +237,156 @@ def test_config_financeiro_defaults():
     assert cfg["financeiro_origem"] == "CAIXA ADM"
     assert cfg["financeiro_destino"] == "MOEDAS"
     assert cfg["financeiro_descricao_moedas"] == "MOEDAS"
-    assert cfg["financeiro_categoria"] == "02.03.01 Fornecedores"
+    assert cfg["financeiro_categoria_padrao"] == "54"
     assert cfg["financeiro_conta"] == "CAIXA ADM"
     assert cfg["financeiro_centro_custo"] == "LAGOA CAFE CONVENIENCIA"
     assert cfg["financeiro_tipo_documento"] == "DINHEIRO"
+    codigos = [c["codigo"] for c in cfg["financeiro_categorias"]]
+    assert len(codigos) == 9
+    assert {"54", "78", "115", "163"} <= set(codigos)
+
+
+def test_categoria_da_nota_vai_para_pendentes_e_historico(tmp_path):
+    db = _db(tmp_path)
+    caixa_id, _ = _caixa(
+        db,
+        notas=[
+            {
+                "id": "n1",
+                "descricao": "ENERGIA",
+                "valor": 30.0,
+                "tipo_codigo": "115",
+                "tipo_descricao": "02.08.99 Outras Despesas Operacionais",
+            }
+        ],
+    )
+    pend = financeiro.pendentes_caixa(db, caixa_id, {})
+    item = next(i for i in pend["itens"] if i["tipo"] == financeiro.TIPO_DESPESA)
+    assert item["tipo_codigo"] == "115"
+    assert item["tipo_descricao"] == "02.08.99 Outras Despesas Operacionais"
+
+    financeiro.registrar_resultado(db, item, True)
+    registro = db.all(financeiro.TABLE)[0]
+    assert registro["tipo_codigo"] == "115"
+    assert registro["tipo_descricao"] == "02.08.99 Outras Despesas Operacionais"
+
+    pend = financeiro.pendentes_caixa(db, caixa_id, {})
+    lancado = next(i for i in pend["itens"] if i["tipo"] == financeiro.TIPO_DESPESA)
+    assert lancado["status"] == financeiro.STATUS_LANCADO
+    assert lancado["tipo_codigo"] == "115"
+
+
+def test_categoria_atual_da_config_prevalece_sobre_snapshot(tmp_path):
+    db = _db(tmp_path)
+    caixa_id, _ = _caixa(
+        db,
+        notas=[
+            {
+                "id": "n1",
+                "descricao": "GAS",
+                "valor": 10.0,
+                "tipo_codigo": "54",
+                "tipo_descricao": "DESCRICAO ANTIGA",
+            }
+        ],
+    )
+    settings = {
+        "financeiro_categorias": [
+            {"codigo": "54", "descricao": "02.03.01 Fornecedores (NOVO)"}
+        ],
+        "financeiro_categoria_padrao": "54",
+    }
+    pend = financeiro.pendentes_caixa(db, caixa_id, settings)
+    item = next(i for i in pend["itens"] if i["tipo"] == financeiro.TIPO_DESPESA)
+    assert item["tipo_descricao"] == "02.03.01 Fornecedores (NOVO)"
+
+
+def test_categoria_removida_usa_snapshot_da_nota(tmp_path):
+    db = _db(tmp_path)
+    caixa_id, _ = _caixa(
+        db,
+        notas=[
+            {
+                "id": "n1",
+                "descricao": "GAS",
+                "valor": 10.0,
+                "tipo_codigo": "115",
+                "tipo_descricao": "02.08.99 Outras Despesas Operacionais",
+            }
+        ],
+    )
+    settings = {
+        "financeiro_categorias": [
+            {"codigo": "78", "descricao": "02.04.23 Vale Transporte"}
+        ],
+        "financeiro_categoria_padrao": "78",
+    }
+    pend = financeiro.pendentes_caixa(db, caixa_id, settings)
+    item = next(i for i in pend["itens"] if i["tipo"] == financeiro.TIPO_DESPESA)
+    assert item["tipo_codigo"] == "115"
+    assert item["tipo_descricao"] == "02.08.99 Outras Despesas Operacionais"
+
+
+def test_categoria_sem_tipo_usa_54(tmp_path):
+    db = _db(tmp_path)
+    caixa_id, _ = _caixa(
+        db, notas=[{"id": "n1", "descricao": "GAS", "valor": 10.0}]
+    )
+    settings = {
+        "financeiro_categorias": [
+            {"codigo": "54", "descricao": "02.03.01 Fornecedores"},
+            {"codigo": "115", "descricao": "02.08.99 Outras Despesas Operacionais"},
+        ],
+        "financeiro_categoria_padrao": "115",
+    }
+    pend = financeiro.pendentes_caixa(db, caixa_id, settings)
+    item = next(i for i in pend["itens"] if i["tipo"] == financeiro.TIPO_DESPESA)
+    assert item["tipo_codigo"] == "54"
+
+
+def test_settings_validam_categorias_financeiro(tmp_path):
+    from app.modules.conciliador import config_posto
+
+    db = _db(tmp_path)
+    with pytest.raises(ValueError):
+        config_posto.save_settings(
+            db,
+            {"financeiro_categorias": [{"codigo": "5x", "descricao": "X"}]},
+        )
+    with pytest.raises(ValueError):
+        config_posto.save_settings(
+            db,
+            {
+                "financeiro_categorias": [
+                    {"codigo": "54", "descricao": "A"},
+                    {"codigo": "54", "descricao": "B"},
+                ]
+            },
+        )
+    with pytest.raises(ValueError):
+        config_posto.save_settings(
+            db,
+            {
+                "financeiro_categorias": [
+                    {"codigo": "78", "descricao": "Vale Transporte"}
+                ]
+            },
+        )
+
+    salvo = config_posto.save_settings(
+        db,
+        {
+            "financeiro_categorias": [
+                {"codigo": "78", "descricao": "02.04.23 Vale Transporte"},
+                {"codigo": "54", "descricao": "02.03.01 Fornecedores"},
+            ],
+            "financeiro_categoria_padrao": "78",
+        },
+    )
+    assert salvo["financeiro_categoria_padrao"] == "78"
+    recarregado = config_posto.load_settings(db)
+    assert [c["codigo"] for c in recarregado["financeiro_categorias"]] == ["78", "54"]
+    assert recarregado["financeiro_categoria_padrao"] == "78"
 
 
 # ─── Conciliação: DINHEIRO = contagem + notas ───────────────────

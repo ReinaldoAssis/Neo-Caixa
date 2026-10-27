@@ -19,7 +19,12 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from app.modules.conciliador.config_posto import DEFAULT_FINANCEIRO
+from app.modules.conciliador.config_posto import (
+    DEFAULT_FINANCEIRO,
+    DEFAULT_FINANCEIRO_CATEGORIA,
+    categoria_por_codigo,
+    normalizar_categorias_financeiro,
+)
 from app.modules.conciliador.constants import parse_money
 
 CONCILIACOES_TABLE = "conciliacoes"
@@ -66,16 +71,47 @@ def _round(value: float) -> float:
 
 # ─── Configuração ────────────────────────────────────────────────
 
-def config_financeiro(settings: dict | None = None) -> dict[str, str]:
+def config_financeiro(settings: dict | None = None) -> dict[str, Any]:
     settings = settings or {}
-    cfg = dict(DEFAULT_FINANCEIRO)
+    cfg: dict[str, Any] = {}
     for chave, padrao in DEFAULT_FINANCEIRO.items():
         valor = settings.get(chave)
         if valor is None or str(valor).strip() == "":
             cfg[chave] = padrao
         else:
             cfg[chave] = str(valor).strip()
+
+    categorias = normalizar_categorias_financeiro(
+        settings.get("financeiro_categorias")
+    )
+    cfg["financeiro_categorias"] = categorias
+    padrao = str(settings.get("financeiro_categoria_padrao") or "").strip()
+    if not categoria_por_codigo(categorias, padrao):
+        padrao = DEFAULT_FINANCEIRO_CATEGORIA
+    if not categoria_por_codigo(categorias, padrao):
+        padrao = categorias[0]["codigo"]
+    cfg["financeiro_categoria_padrao"] = padrao
     return cfg
+
+
+def resolver_categoria(
+    tipo_codigo: Any,
+    tipo_descricao: Any,
+    config: dict[str, Any],
+) -> tuple[str, str]:
+    """Categoria efetiva: config atual pelo código; snapshot como fallback."""
+    codigo = str(tipo_codigo or "").strip()
+    snapshot = " ".join(str(tipo_descricao or "").split())
+    categorias = config.get("financeiro_categorias") or []
+    if not codigo:
+        # Nota antiga/sem tipo: mantem o comportamento historico (54).
+        codigo = DEFAULT_FINANCEIRO_CATEGORIA
+        if not categoria_por_codigo(categorias, codigo):
+            codigo = str(config.get("financeiro_categoria_padrao") or codigo)
+    categoria = categoria_por_codigo(categorias, codigo)
+    if categoria:
+        return str(categoria["codigo"]), str(categoria["descricao"])
+    return codigo, snapshot or codigo
 
 
 # ─── Notas de despesa ────────────────────────────────────────────
@@ -92,6 +128,14 @@ def normalizar_nota(raw: Any, default_id: str | None = None) -> dict[str, Any] |
         "id": nota_id,
         "descricao": descricao or "DESPESA",
         "valor": valor,
+        "tipo_codigo": str(
+            raw.get("tipo_codigo") or raw.get("categoria_codigo") or ""
+        ).strip(),
+        "tipo_descricao": " ".join(
+            str(
+                raw.get("tipo_descricao") or raw.get("categoria_descricao") or ""
+            ).split()
+        ),
         "legado": bool(raw.get("legado")),
     }
 
@@ -270,6 +314,8 @@ def registrar_resultado(
         "caixa_id": item.get("caixa_id", ""),
         "turno": item.get("turno"),
         "nota_id": item.get("nota_id"),
+        "tipo_codigo": str(item.get("tipo_codigo") or ""),
+        "tipo_descricao": str(item.get("tipo_descricao") or ""),
         "data": item.get("data", ""),
         "descricao": item.get("descricao", ""),
         "valor": _to_float(item.get("valor")),
@@ -305,6 +351,8 @@ def _item_base(
     caixa_id: str,
     turno: int | None = None,
     nota_id: str | None = None,
+    tipo_codigo: str = "",
+    tipo_descricao: str = "",
     status: str = STATUS_PENDENTE,
     selecionavel: bool = True,
     legado: bool = False,
@@ -328,6 +376,8 @@ def _item_base(
         "caixa_id": caixa_id,
         "turno": turno,
         "nota_id": nota_id,
+        "tipo_codigo": str(tipo_codigo or ""),
+        "tipo_descricao": str(tipo_descricao or ""),
         "status": status,
         "selecionavel": bool(selecionavel),
         "legado": bool(legado),
@@ -439,10 +489,12 @@ def _despesas_itens(
     database,
     doc: dict[str, Any],
     caixa_id: str,
+    config: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     data_iso = str(doc.get("data", ""))
     chaves = _por_chave(database)
     itens: list[dict[str, Any]] = []
+    config = config or config_financeiro({})
 
     for nota in notas_do_caixa(doc):
         turno = nota.get("turno")
@@ -452,6 +504,11 @@ def _despesas_itens(
         valor = _to_float(nota.get("valor"))
         descricao = str(nota.get("descricao") or "DESPESA")
         legado = bool(nota.get("legado"))
+        tipo_codigo, tipo_descricao = resolver_categoria(
+            nota.get("tipo_codigo"),
+            nota.get("tipo_descricao"),
+            config,
+        )
 
         if registro and registro.get("lancado_em"):
             itens.append(
@@ -465,6 +522,12 @@ def _despesas_itens(
                     caixa_id=caixa_id,
                     turno=turno,
                     nota_id=nota_id,
+                    tipo_codigo=str(
+                        registro.get("tipo_codigo") or tipo_codigo
+                    ),
+                    tipo_descricao=str(
+                        registro.get("tipo_descricao") or tipo_descricao
+                    ),
                     status=STATUS_LANCADO,
                     selecionavel=False,
                     legado=legado,
@@ -486,6 +549,8 @@ def _despesas_itens(
                     caixa_id=caixa_id,
                     turno=turno,
                     nota_id=nota_id,
+                    tipo_codigo=tipo_codigo,
+                    tipo_descricao=tipo_descricao,
                     status=STATUS_ERRO,
                     selecionavel=True,
                     legado=legado,
@@ -505,6 +570,8 @@ def _despesas_itens(
                 caixa_id=caixa_id,
                 turno=turno,
                 nota_id=nota_id,
+                tipo_codigo=tipo_codigo,
+                tipo_descricao=tipo_descricao,
                 status=STATUS_PENDENTE,
                 selecionavel=True,
                 legado=legado,
@@ -544,7 +611,7 @@ def pendentes_caixa(database, caixa_id: str, settings: dict | None = None) -> di
         )
         itens.extend(moedas)
 
-    despesas = _despesas_itens(database, doc, str(caixa_id))
+    despesas = _despesas_itens(database, doc, str(caixa_id), config)
     itens.extend(despesas)
 
     if motivo:
@@ -644,6 +711,8 @@ def selecionar_por_chaves(
                 "caixa_id": str(caixa_id),
                 "turno": item.get("turno"),
                 "nota_id": item.get("nota_id"),
+                "tipo_codigo": str(item.get("tipo_codigo") or ""),
+                "tipo_descricao": str(item.get("tipo_descricao") or ""),
             }
         )
 

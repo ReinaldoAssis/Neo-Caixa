@@ -159,13 +159,29 @@ CONTAGEM_TAB_BEHAVIORS = ("icone", "icone_fixo")
 #   opcional_todas    -> serial opcional em todas as contagens
 SERIAL_200_MODES = ("obrigatorio_todas", "opcional_geral", "opcional_todas")
 
+# Categorias de despesa (Tipo) usadas no pagamento do gerenciador financeiro.
+# `codigo` é o identificador do Cloudfy; `descricao` é o texto procurado no
+# selectize. A lista é editável em Configurações > Financeiro.
+DEFAULT_FINANCEIRO_CATEGORIAS: list[dict[str, str]] = [
+    {"codigo": "78", "descricao": "02.04.23 Vale Transporte"},
+    {"codigo": "54", "descricao": "02.03.01 Fornecedores"},
+    {"codigo": "56", "descricao": "02.04.01 Adiantamento Salarial"},
+    {"codigo": "74", "descricao": "02.04.19 Salarios / Remuneracoes"},
+    {"codigo": "79", "descricao": "02.04.99 Outras Despesas c/ Pessoal"},
+    {"codigo": "115", "descricao": "02.08.99 Outras Despesas Operacionais"},
+    {"codigo": "151", "descricao": "02.12.99 Outras Despesas c/ Reposicoes"},
+    {"codigo": "145", "descricao": "02.11.99 Outras Despesas c/ Manutencoes"},
+    {"codigo": "163", "descricao": "02.99 SNOP - OUTRAS SAIDAS NAO OPERACIONAIS"},
+]
+
+DEFAULT_FINANCEIRO_CATEGORIA = "54"
+
 # Valores usados pelo atalho de lançamentos financeiros do caixa restaurante.
 # São textos procurados nas opções do selectize do Cloudfy.
 DEFAULT_FINANCEIRO = {
     "financeiro_origem": "CAIXA ADM",
     "financeiro_destino": "MOEDAS",
     "financeiro_descricao_moedas": "MOEDAS",
-    "financeiro_categoria": "02.03.01 Fornecedores",
     "financeiro_conta": "CAIXA ADM",
     "financeiro_centro_custo": "LAGOA CAFE CONVENIENCIA",
     "financeiro_tipo_documento": "DINHEIRO",
@@ -180,12 +196,82 @@ DEFAULT_SETTINGS = {
     "cloudfy_debug": False,
     "otimizar_automacao": True,
     "relatorio_csv_dir": "",
+    "financeiro_categorias": DEFAULT_FINANCEIRO_CATEGORIAS,
+    "financeiro_categoria_padrao": DEFAULT_FINANCEIRO_CATEGORIA,
     **DEFAULT_FINANCEIRO,
 }
 
 
+def default_financeiro_categorias() -> list[dict[str, str]]:
+    return [dict(categoria) for categoria in DEFAULT_FINANCEIRO_CATEGORIAS]
+
+
+def _categoria(raw) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    codigo = str(raw.get("codigo", "")).strip()
+    descricao = " ".join(str(raw.get("descricao", "")).split())
+    if not codigo.isdigit() or not descricao:
+        return None
+    return {"codigo": codigo, "descricao": descricao}
+
+
+def normalizar_categorias_financeiro(raw) -> list[dict[str, str]]:
+    """Normaliza a lista salva; lista inválida/vazia cai no default."""
+    if not isinstance(raw, list):
+        return default_financeiro_categorias()
+    out: list[dict[str, str]] = []
+    vistos: set[str] = set()
+    for item in raw:
+        categoria = _categoria(item)
+        if categoria is None or categoria["codigo"] in vistos:
+            continue
+        vistos.add(categoria["codigo"])
+        out.append(categoria)
+    return out or default_financeiro_categorias()
+
+
+def validar_categorias_financeiro(raw) -> list[dict[str, str]]:
+    """Valida a lista enviada pela UI; erro explícito para dado inválido."""
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("Informe pelo menos uma categoria de despesa.")
+    out: list[dict[str, str]] = []
+    vistos: set[str] = set()
+    for posicao, item in enumerate(raw, start=1):
+        categoria = _categoria(item)
+        if categoria is None:
+            raise ValueError(
+                f"Categoria {posicao}: codigo deve ser inteiro e descricao obrigatoria."
+            )
+        if categoria["codigo"] in vistos:
+            raise ValueError(f"Codigo de categoria duplicado: {categoria['codigo']}.")
+        vistos.add(categoria["codigo"])
+        out.append(categoria)
+    return out
+
+
+def categoria_por_codigo(
+    categorias: list[dict[str, str]] | None, codigo: str
+) -> dict[str, str] | None:
+    codigo = str(codigo or "").strip()
+    for categoria in categorias or []:
+        if str(categoria.get("codigo")) == codigo:
+            return categoria
+    return None
+
+
+def _padrao_valido(categorias: list[dict[str, str]], codigo: str) -> str:
+    if categoria_por_codigo(categorias, codigo):
+        return str(codigo)
+    if categoria_por_codigo(categorias, DEFAULT_FINANCEIRO_CATEGORIA):
+        return DEFAULT_FINANCEIRO_CATEGORIA
+    return categorias[0]["codigo"]
+
+
 def default_settings() -> dict:
-    return dict(DEFAULT_SETTINGS)
+    settings = dict(DEFAULT_SETTINGS)
+    settings["financeiro_categorias"] = default_financeiro_categorias()
+    return settings
 
 
 def load_settings(database) -> dict:
@@ -210,6 +296,14 @@ def load_settings(database) -> dict:
         settings["relatorio_csv_dir"] = doc.get("relatorio_csv_dir", "")
         for chave, padrao in DEFAULT_FINANCEIRO.items():
             settings[chave] = doc.get(chave, padrao)
+        categorias = normalizar_categorias_financeiro(
+            doc.get("financeiro_categorias")
+        )
+        settings["financeiro_categorias"] = categorias
+        settings["financeiro_categoria_padrao"] = _padrao_valido(
+            categorias,
+            str(doc.get("financeiro_categoria_padrao") or "").strip(),
+        )
     return settings
 
 
@@ -246,6 +340,24 @@ def save_settings(database, data: dict) -> dict:
     for chave in DEFAULT_FINANCEIRO:
         if chave in data:
             settings[chave] = str(data.get(chave, "")).strip()
+
+    if "financeiro_categorias" in data:
+        settings["financeiro_categorias"] = validar_categorias_financeiro(
+            data.get("financeiro_categorias")
+        )
+    if "financeiro_categoria_padrao" in data:
+        codigo = str(data.get("financeiro_categoria_padrao") or "").strip()
+        if not categoria_por_codigo(settings["financeiro_categorias"], codigo):
+            raise ValueError(
+                f"financeiro_categoria_padrao '{codigo}' nao existe na lista de categorias."
+            )
+        settings["financeiro_categoria_padrao"] = codigo
+
+    padrao = str(settings.get("financeiro_categoria_padrao") or "")
+    if not categoria_por_codigo(settings["financeiro_categorias"], padrao):
+        raise ValueError(
+            f"A categoria padrao '{padrao}' nao pode ser removida sem trocar o padrao."
+        )
 
     payload = {"key": SETTINGS_KEY, **settings}
     existing = database.search(CONFIG_TABLE, {"key": SETTINGS_KEY})

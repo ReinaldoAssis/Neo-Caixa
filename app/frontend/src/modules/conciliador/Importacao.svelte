@@ -51,6 +51,24 @@
   let contagemTabBehavior = $state<"icone" | "icone_fixo">("icone");
   let serial200Mode = $state<"obrigatorio_todas" | "opcional_geral" | "opcional_todas">("obrigatorio_todas");
 
+  type CategoriaFinanceiro = { codigo: string; descricao: string };
+  let financeiroCategorias = $state<CategoriaFinanceiro[]>([]);
+  let financeiroCategoriaPadrao = $state("54");
+  let novaDespesaTipo = $state("54");
+
+  function categoriaFinanceiraPadrao(): CategoriaFinanceiro {
+    return (
+      financeiroCategorias.find((c) => c.codigo === financeiroCategoriaPadrao) ||
+      financeiroCategorias[0] ||
+      { codigo: "54", descricao: "02.03.01 Fornecedores" }
+    );
+  }
+
+  function rotuloCategoria(codigo: string, descricao = ""): string {
+    const atual = financeiroCategorias.find((c) => c.codigo === codigo);
+    return `${codigo} - ${atual?.descricao || descricao || codigo}`;
+  }
+
   async function loadModuleSettings() {
     try {
       const res = await fetch("/api/conciliador/config/settings");
@@ -62,6 +80,18 @@
         if (["obrigatorio_todas", "opcional_geral", "opcional_todas"].includes(s.serial_200_mode)) {
           serial200Mode = s.serial_200_mode;
         }
+        if (Array.isArray(s.financeiro_categorias)) {
+          financeiroCategorias = s.financeiro_categorias
+            .filter((c: any) => c && c.codigo && c.descricao)
+            .map((c: any) => ({
+              codigo: String(c.codigo),
+              descricao: String(c.descricao),
+            }));
+        }
+        if (typeof s.financeiro_categoria_padrao === "string") {
+          financeiroCategoriaPadrao = s.financeiro_categoria_padrao;
+        }
+        novaDespesaTipo = categoriaFinanceiraPadrao().codigo;
       }
     } catch {
       // keep default
@@ -103,6 +133,8 @@
     id: string;
     descricao: string;
     valor: number;
+    tipo_codigo: string;
+    tipo_descricao: string;
     legado?: boolean;
   };
   type FinanceiroItem = {
@@ -116,6 +148,8 @@
     caixa_id: string;
     turno: number | null;
     nota_id: string | null;
+    tipo_codigo: string;
+    tipo_descricao: string;
     status: string;
     selecionavel: boolean;
     legado: boolean;
@@ -965,10 +999,15 @@
     if (!raw || typeof raw !== "object") return null;
     const valor = Math.round(Number(raw.valor || 0) * 100) / 100;
     if (!(valor > 0)) return null;
+    const legado54 =
+      financeiroCategorias.find((c) => c.codigo === "54") ||
+      { codigo: "54", descricao: "02.03.01 Fornecedores" };
     return {
       id: String(raw.id || fallbackId),
       descricao: String(raw.descricao || "DESPESA"),
       valor,
+      tipo_codigo: String(raw.tipo_codigo || legado54.codigo),
+      tipo_descricao: String(raw.tipo_descricao || legado54.descricao),
       legado: Boolean(raw.legado),
     };
   }
@@ -982,10 +1021,15 @@
 
     const ajuste = Math.round(Number(raw?.dinheiro_ajuste || 0) * 100) / 100;
     if (ajuste > 0) {
+      const legado54 =
+        financeiroCategorias.find((c) => c.codigo === "54") ||
+        { codigo: "54", descricao: "02.03.01 Fornecedores" };
       return [{
         id: `legado-${prefixo}`,
         descricao: "AJUSTE MANUAL",
         valor: ajuste,
+        tipo_codigo: legado54.codigo,
+        tipo_descricao: legado54.descricao,
         legado: true,
       }];
     }
@@ -1024,9 +1068,18 @@
       errorMessage = "Valor da nota de despesa deve ser maior que zero.";
       return;
     }
+    const categoria =
+      financeiroCategorias.find((c) => c.codigo === novaDespesaTipo) ||
+      categoriaFinanceiraPadrao();
     despesasNotas = [
       ...despesasNotas,
-      { id: crypto.randomUUID(), descricao, valor },
+      {
+        id: crypto.randomUUID(),
+        descricao,
+        valor,
+        tipo_codigo: categoria.codigo,
+        tipo_descricao: categoria.descricao,
+      },
     ];
     novaDespesaDesc = "";
     novaDespesaValor = "";
@@ -1036,6 +1089,21 @@
   function updateNotaDescricao(id: string, valor: string) {
     despesasNotas = despesasNotas.map((nota) =>
       nota.id === id ? { ...nota, descricao: valor } : nota,
+    );
+  }
+
+  function updateNotaTipo(id: string, codigo: string) {
+    if (notaStatus(id)?.lancado_em) return;
+    const categoria = financeiroCategorias.find((c) => c.codigo === codigo);
+    if (!categoria) return;
+    despesasNotas = despesasNotas.map((nota) =>
+      nota.id === id
+        ? {
+            ...nota,
+            tipo_codigo: categoria.codigo,
+            tipo_descricao: categoria.descricao,
+          }
+        : nota,
     );
   }
 
@@ -2328,6 +2396,24 @@
                   placeholder="Descricao da nota"
                   class="min-w-0 flex-1 rounded-md border px-2 py-1 text-sm"
                 />
+                <select
+                  value={nota.tipo_codigo}
+                  onchange={(e) => updateNotaTipo(nota.id, (e.target as HTMLSelectElement).value)}
+                  disabled={readonly || Boolean(notaStatus(nota.id)?.lancado_em)}
+                  title="Tipo (categoria do lancamento no financeiro)"
+                  class="w-56 rounded-md border px-2 py-1 text-sm disabled:opacity-60"
+                >
+                  {#if !financeiroCategorias.some((c) => c.codigo === nota.tipo_codigo)}
+                    <option value={nota.tipo_codigo}>
+                      {rotuloCategoria(nota.tipo_codigo, nota.tipo_descricao)} (removida)
+                    </option>
+                  {/if}
+                  {#each financeiroCategorias as categoria}
+                    <option value={categoria.codigo}>
+                      {categoria.codigo} - {categoria.descricao}
+                    </option>
+                  {/each}
+                </select>
                 <input
                   type="text"
                   value={notaValorTexto(nota.valor)}
@@ -2365,6 +2451,17 @@
               placeholder="Descricao da nota de despesa"
               class="min-w-0 flex-1 rounded-md border px-2 py-1 text-sm"
             />
+            <select
+              bind:value={novaDespesaTipo}
+              title="Tipo da nota"
+              class="w-56 rounded-md border px-2 py-1 text-sm"
+            >
+              {#each financeiroCategorias as categoria}
+                <option value={categoria.codigo}>
+                  {categoria.codigo} - {categoria.descricao}
+                </option>
+              {/each}
+            </select>
             <input
               type="text"
               bind:value={novaDespesaValor}
@@ -2587,6 +2684,11 @@
                         : item.descricao}
                     </span>
                     <span class="text-sm font-semibold">{formatMoney(item.valor)}</span>
+                    {#if item.tipo === "despesa" && item.tipo_codigo}
+                      <span class="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-700">
+                        Tipo {rotuloCategoria(item.tipo_codigo, item.tipo_descricao)}
+                      </span>
+                    {/if}
                     {#if item.turno}
                       <span class="text-xs text-muted-foreground">Turno {item.turno}</span>
                     {/if}

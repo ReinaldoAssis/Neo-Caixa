@@ -16,11 +16,21 @@
     .switchery { display: inline-block; width: 36px; height: 20px; border-radius: 10px; background: #ccc; cursor: pointer; }
     .switchery.on { background: #1e88e5; }
     .danger { border-color: red !important; }
+    .md-btn { padding: 8px 12px; border: 1px solid #999; background: #eee; cursor: pointer; }
+    .menu-wrap { position: relative; display: inline-block; }
+    .menu-novo { display: none; position: absolute; left: 0; top: 100%; z-index: 5; background: #fff; border: 1px solid #999; padding: 8px; }
+    .menu-wrap:hover .menu-novo { display: block; }
+    .menu-novo a { display: block; padding: 4px 8px; }
   </style>
 </head>
 <body>
-  <a href="" ng-click="onNovoPagamento()" id="novo-pagamento">Novo pagamento</a>
-  <a href="" ng-click="onNovaTransferencia()" id="nova-transferencia">Nova transferência</a>
+  <div class="menu-wrap">
+    <button class="md-btn ng-binding">Novo<i class="material-icons"></i></button>
+    <div class="menu-novo">
+      <a href="" ng-click="onNovoPagamento()" id="novo-pagamento">Novo pagamento</a>
+      <a href="" ng-click="onNovaTransferencia()" id="nova-transferencia">Nova transferência</a>
+    </div>
+  </div>
 
   <div class="uk-modal" id="modal-pagamento" style="display:none">
     <main ng-controller="H02SF0201B">
@@ -227,7 +237,8 @@
       makeSelectize(pagamento.querySelector('[skn-id="Components.FI030_NR_PESSOA"]'),
         ['1 : DIVERSOS', '2 : FORNECEDOR TESTE'], '');
       makeSelectize(pagamento.querySelector('[skn-id="Components.FI030_NR_CAT"]'),
-        ['54 : 02.03.01 Fornecedores', '154 : 02.98.02 Equipamentos p/ Automacao'],
+        ['54 : 02.03.01 Fornecedores', '78 : 02.04.23 Vale Transporte',
+         '115 : 02.08.99 Outras Despesas Operacionais'],
         '54 : 02.03.01 Fornecedores');
       makeSelectize(pagamento.querySelector('[skn-id="Components.FI030_NR_CONTA"]'),
         ['1 : CAIXA ADM', '2 : CAIXA LOJA'], '1 : CAIXA ADM');
