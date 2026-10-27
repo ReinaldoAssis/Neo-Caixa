@@ -73,3 +73,19 @@ def test_warm_from_settings_desligado():
     resultado = warm_from_settings(_DBDesligado())
     assert resultado["ok"] is False
     assert resultado["motivo"] == "otimizacao desligada"
+
+
+def test_lancar_financeiro_bloqueia_janela_visivel(monkeypatch):
+    from app.modules.conciliador.automacao_sessao import AutomacaoIndisponivel
+
+    sessao = AutomacaoSession()
+    monkeypatch.setattr(sessao, "_browser_ok", lambda: True)
+    sessao._headed = True
+    sessao._debug = False
+
+    try:
+        with pytest.raises(AutomacaoIndisponivel):
+            sessao.lancar_financeiro("u", "s", [], {})
+        assert "Feche o navegador" in sessao.status()["detail"]
+    finally:
+        sessao.fechar(timeout=5)

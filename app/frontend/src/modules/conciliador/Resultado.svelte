@@ -21,7 +21,7 @@
   const ajusteDinheiro = $derived(
     Number(caixa?.dinheiro_ajuste ?? extra?.dinheiro_ajuste ?? 0),
   );
-  let turnoRows = $state<{ turno: number; rows: any[]; totalDiff: number; ajuste: number }[]>([]);
+  let turnoRows = $state<{ turno: number; rows: any[]; totalDiff: number; ajuste: number; notas: any[] }[]>([]);
 
   let postoLabels = $state<Record<string, string>>({
     PREMMIA_CARTAO: "PREMMIA CARTAO", PREMMIA_PIX: "PREMMIA PIX",
@@ -114,12 +114,17 @@
     turnoRows = [1, 2].map((n) => {
       const store = turnos[String(n)] || { categorias: {}, contagens: [], avulsos: [] };
       const geral = (store.contagens || []).find((c: any) => c.label === "Geral");
-      const ajuste = Number(store.dinheiro_ajuste || 0);
+      const notas = Array.isArray(store.despesas_notas) ? store.despesas_notas : [];
+      const ajuste = notas.length
+        ? Math.round(
+            notas.reduce((soma: number, nota: any) => soma + Number(nota.valor || 0), 0) * 100,
+          ) / 100
+        : Number(store.dinheiro_ajuste || 0);
       const dinheiroReal = (geral?.total || 0) + ajuste;
       const avulsosTurno = lancamentosAvulsos.filter((a) => Number(a.turno) === n);
       const r = buildRestRowsFor(store.categorias || {}, avulsosTurno, dinheiroReal);
       const totalDiff = Math.round(r.reduce((s, row) => s + (row.diferenca || 0), 0) * 100) / 100;
-      return { turno: n, rows: r, totalDiff, ajuste };
+      return { turno: n, rows: r, totalDiff, ajuste, notas };
     });
   }
 
@@ -492,18 +497,27 @@
 
       {#if tipo === "restaurante"}
         {#if isSplit}
-          {#if turnoRows.some((tr) => tr.ajuste !== 0)}
+          {#if turnoRows.some((tr) => (tr.notas || []).length > 0)}
             <div class="mt-6 rounded-lg border p-4">
               <h3 class="mb-2 font-semibold">Informacoes Complementares</h3>
               {#each turnoRows as tr}
-                {#if tr.ajuste !== 0}
+                {#each tr.notas || [] as nota}
                   <p class="text-sm">
-                    Turno {tr.turno} - ajuste manual do DINHEIRO: {formatMoney(tr.ajuste)}
+                    Turno {tr.turno} - {nota.descricao}: {formatMoney(Number(nota.valor || 0))}
                   </p>
-                {/if}
+                {/each}
               {/each}
             </div>
           {/if}
+        {:else if (caixa.despesas_notas || []).length > 0}
+          <div class="mt-6 rounded-lg border p-4">
+            <h3 class="mb-2 font-semibold">Informacoes Complementares</h3>
+            {#each caixa.despesas_notas as nota}
+              <p class="text-sm">
+                {nota.descricao}: {formatMoney(Number(nota.valor || 0))}
+              </p>
+            {/each}
+          </div>
         {:else if ajusteDinheiro !== 0}
           <div class="mt-6 rounded-lg border p-4">
             <h3 class="mb-2 font-semibold">Informacoes Complementares</h3>

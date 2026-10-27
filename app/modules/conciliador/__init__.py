@@ -55,10 +55,21 @@ from app.modules.conciliador.automacao import (
     importar_caixa_cloudfy,
     importar_caixas_cloudfy,
     lancar_caixa_cloudfy,
+    lancar_financeiro_cloudfy,
     baixar_descontos_cloudfy,
 )
+from app.modules.conciliador.financeiro import (
+    normalizar_despesas,
+    pendentes_caixa,
+    selecionar_por_chaves,
+    registrar_resultado,
+    config_financeiro,
+)
 from app.modules.conciliador import automacao_sessao
-from app.modules.conciliador.automacao_sessao import AutomacaoOcupada
+from app.modules.conciliador.automacao_sessao import (
+    AutomacaoIndisponivel,
+    AutomacaoOcupada,
+)
 from app.modules.conciliador.descontos import (
     list_descontos,
     toggle_conferido,
@@ -152,10 +163,12 @@ def _normalize_restaurante(data: dict) -> dict:
     data.setdefault("observacoes", "")
     data.setdefault("dinheiro_real", 0.0)
     data.setdefault("dinheiro_ajuste", 0.0)
+    data.setdefault("despesas_notas", [])
     data.setdefault("criado_em", now)
     data["atualizado_em"] = now
     avulsos = data.get("lancamentos_avulsos") or []
     contagens = data.get("contagens_dinheiro") or []
+    normalizar_despesas(data)
     ajuste = round(float(data.get("dinheiro_ajuste") or 0), 2)
     data["dinheiro_ajuste"] = ajuste
     dinheiro_real = round(_dinheiro_real_from_contagens(contagens) + ajuste, 2)
@@ -797,6 +810,85 @@ async def automacao_fechar_navegador():
         )
     except AutomacaoOcupada as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+
+
+# ─── Lançamentos financeiros do caixa restaurante ───────────────
+
+@router.get("/financeiro/caixa/{caixa_id}/pendentes")
+async def financeiro_pendentes(caixa_id: str):
+    settings = load_settings(app_context.database)
+    try:
+        return pendentes_caixa(app_context.database, caixa_id, settings)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/financeiro/lancar")
+async def financeiro_lancar(data: dict):
+    import asyncio as aio
+
+    caixa_id = data.get("caixa_id")
+    chaves = data.get("chaves")
+    if not caixa_id:
+        raise HTTPException(status_code=400, detail="Informe 'caixa_id'.")
+    if not isinstance(chaves, list) or not chaves:
+        raise HTTPException(status_code=400, detail="Informe 'chaves' com pelo menos 1 item.")
+
+    login, senha, debug, otimizar = _cloudfy_config()
+    if not login or not senha:
+        raise HTTPException(
+            status_code=400,
+            detail="Credenciais Cloudfy nao configuradas. Acesse Configuracoes.",
+        )
+
+    settings = load_settings(app_context.database)
+    try:
+        itens = selecionar_por_chaves(
+            app_context.database,
+            str(caixa_id),
+            chaves,
+            bool(data.get("forcar")),
+            settings,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    loop = aio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lancar_financeiro_cloudfy,
+            login,
+            senha,
+            itens,
+            config_financeiro(settings),
+            debug,
+            otimizar,
+        )
+    except (AutomacaoOcupada, AutomacaoIndisponivel) as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    if result.get("erro"):
+        raise HTTPException(status_code=500, detail=str(result["erro"]))
+
+    resultados = result.get("resultados") or []
+    por_chave = {str(r.get("chave")): r for r in resultados}
+    registros = []
+    for item in itens:
+        res = por_chave.get(str(item["chave"]), {
+            "ok": False,
+            "erro": "Lancamento nao executado.",
+        })
+        registros.append(
+            registrar_resultado(
+                app_context.database,
+                item,
+                bool(res.get("ok")),
+                str(res.get("erro") or ""),
+            )
+        )
+
+    return {**result, "registros": registros}
 
 
 # ─── Gerenciador de Descontos ───────────────────────────────────

@@ -18,10 +18,12 @@ from dataclasses import dataclass, field, asdict
 from typing import Any
 
 from app.core.logger import logger
+from app.modules.conciliador.financeiro import TIPO_DESPESA, TIPO_MOEDAS
 
 CLOUDY_BASE = "https://app.cloudfy.net.br/site"
 LOGIN_URL = f"{CLOUDY_BASE}/#/login"
 CONCILIADOR_URL = f"{CLOUDY_BASE}/#/H02SF0108B"
+FINANCEIRO_URL = f"{CLOUDY_BASE}/#/H02SF0201E"
 HOME_URL = f"{CLOUDY_BASE}/#/"
 
 RELATORIO_DESCONTO_MENU = "Relatório de desconto"
@@ -31,6 +33,7 @@ FORMA_VENDA_A_PRAZO = "venda a prazo"
 TIMEOUT_PADRAO_MS = 15000
 TIMEOUT_CURTO_MS = 8000
 TIMEOUT_POPUP_MS = 10000
+TIMEOUT_SELECT_MS = 2500
 
 
 # ─── Models ────────────────────────────────────────────────────────
@@ -488,6 +491,37 @@ JS_CLICAR_MENU = """
 }
 """
 
+JS_FINANCEIRO_PRONTO = """
+() => !!document.querySelector('a[ng-click="onNovoPagamento()"]')
+    && !!document.querySelector('a[ng-click="onNovaTransferencia()"]')
+"""
+
+JS_SELECT_OPTION = """
+({skn, texto}) => {
+    const w = document.querySelector(`[skn-id="${skn}"]`);
+    if (!w) return false;
+    const alvo = String(texto || '').replace(/\\s+/g, ' ').trim().toUpperCase();
+    if (!alvo) return false;
+    return Array.from(w.querySelectorAll('.selectize-dropdown .option')).some(o => {
+        const t = (o.textContent || '').replace(/\\s+/g, ' ').trim().toUpperCase();
+        return t === alvo || t.endsWith(' : ' + alvo) || t.includes(alvo);
+    });
+}
+"""
+
+JS_SELECT_SELECIONADO = """
+({skn, texto}) => {
+    const w = document.querySelector(`[skn-id="${skn}"]`);
+    if (!w) return false;
+    const alvo = String(texto || '').replace(/\\s+/g, ' ').trim().toUpperCase();
+    if (!alvo) return false;
+    return Array.from(w.querySelectorAll('.selectize-input .item')).some(i => {
+        const t = (i.textContent || '').replace(/\\s+/g, ' ').trim().toUpperCase();
+        return t === alvo || t.endsWith(' : ' + alvo) || t.includes(alvo);
+    });
+}
+"""
+
 
 def _url_login(url: str) -> bool:
     return "login" in str(url or "").lower()
@@ -782,6 +816,380 @@ async def executar_lancamento(
     }
 
 
+# ─── Gerenciador financeiro (H02SF0201E) ─────────────────────────
+
+SKN_DESCRICAO = "Components.FI030_VC_LANC"
+SKN_VALOR = "Components.FI030_VL_LANC"
+SKN_DT_TRANSF = "Components.FI030_DT_TRANSF"
+SKN_CONTA_ORIGEM = "Components.FI030_NR_CONTAOR"
+SKN_CONTA_DESTINO = "Components.FI030_NR_CONTADE"
+SKN_DT_VENC = "Components.FI030_DT_VENC"
+SKN_PAGAR_CONTA = "Components.FI030_IT_PAGO"
+SKN_DT_PAGAMENTO = "Components.FI030_DT_PAGREC"
+SKN_CATEGORIA = "Components.FI030_NR_CAT"
+SKN_CONTA = "Components.FI030_NR_CONTA"
+SKN_CENTRO_CUSTO = "Components.AD030_NR_CC"
+SKN_TIPO_DOCUMENTO = "Components.FI060_IT_TPDOC"
+SKN_FORNECEDOR = "Components.FI030_NR_PESSOA"
+
+
+def _valor_br(valor: Any) -> str:
+    texto = f"{float(valor or 0):,.2f}"
+    return texto.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _data_br(data_iso: Any) -> str:
+    texto = str(data_iso or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", texto):
+        ano, mes, dia = texto.split("-")
+        return f"{dia}/{mes}/{ano}"
+    return texto
+
+
+def _opcao_score(opcao: str, alvo: str) -> int:
+    o = " ".join(str(opcao or "").split()).strip().upper()
+    a = " ".join(str(alvo or "").split()).strip().upper()
+    if not a or not o:
+        return -1
+    if o == a:
+        return 0
+    if o.endswith(" : " + a) or o.endswith(": " + a):
+        return 1
+    if a in o:
+        return 2
+    return -1
+
+
+async def _clicar_melhor_opcao(wrapper, texto: str, timeout_ms: int = TIMEOUT_SELECT_MS) -> bool:
+    opcoes = wrapper.locator(".selectize-dropdown .option")
+    try:
+        await opcoes.first.wait_for(state="attached", timeout=timeout_ms)
+    except Exception:
+        return False
+
+    melhor = None
+    melhor_score = 99
+    total = await opcoes.count()
+    for i in range(total):
+        opcao = opcoes.nth(i)
+        try:
+            if not await opcao.is_visible():
+                continue
+            score = _opcao_score(await opcao.inner_text(), texto)
+        except Exception:
+            continue
+        if score < 0:
+            continue
+        if score < melhor_score:
+            melhor = opcao
+            melhor_score = score
+            if score == 0:
+                break
+
+    if melhor is None:
+        return False
+    await melhor.click()
+    return True
+
+
+async def _confirmar_selecao(page, skn_id: str, texto: str) -> None:
+    try:
+        await page.wait_for_function(
+            JS_SELECT_SELECIONADO,
+            arg={"skn": skn_id, "texto": texto},
+            timeout=TIMEOUT_SELECT_MS,
+        )
+    except Exception:
+        pass
+
+
+async def _selecionar_opcao(modal, skn_id: str, texto: str) -> None:
+    """Seleciona uma opção de selectize pelo texto (código ou descrição)."""
+    texto = str(texto or "").strip()
+    if not texto:
+        return
+    wrapper = modal.locator(f'[skn-id="{skn_id}"]').first
+    await wrapper.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
+    page = modal.page
+
+    try:
+        atual = await wrapper.locator(".selectize-input").first.inner_text()
+        if _opcao_score(atual, texto) >= 0:
+            return
+    except Exception:
+        pass
+
+    controle = wrapper.locator(".selectize-input").first
+    await controle.click()
+
+    try:
+        await page.wait_for_function(
+            JS_SELECT_OPTION,
+            arg={"skn": skn_id, "texto": texto},
+            timeout=TIMEOUT_SELECT_MS,
+        )
+    except Exception:
+        pass
+
+    if await _clicar_melhor_opcao(wrapper, texto):
+        await _confirmar_selecao(page, skn_id, texto)
+        return
+
+    # Filtra digitando o texto no selectize e tenta novamente.
+    try:
+        await page.keyboard.type(texto, delay=15)
+    except Exception:
+        pass
+    try:
+        await page.wait_for_function(
+            JS_SELECT_OPTION,
+            arg={"skn": skn_id, "texto": texto},
+            timeout=TIMEOUT_CURTO_MS,
+        )
+    except Exception:
+        pass
+    if await _clicar_melhor_opcao(wrapper, texto, TIMEOUT_CURTO_MS):
+        await _confirmar_selecao(page, skn_id, texto)
+        return
+
+    raise RuntimeError(
+        f"Opcao '{texto}' nao encontrada no campo {skn_id} do financeiro."
+    )
+
+
+async def _preencher_campo(modal, skn_id: str, valor: str) -> None:
+    from playwright.async_api import expect
+
+    campo = modal.locator(
+        f'[skn-id="{skn_id}"] input[ng-model="sknField"]'
+    ).first
+    await campo.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
+    await expect(campo).to_be_enabled(timeout=TIMEOUT_CURTO_MS)
+    await campo.fill(str(valor))
+    await campo.press("Tab")
+
+
+async def _toggle_pagar_conta(modal) -> None:
+    from playwright.async_api import expect
+
+    wrapper = modal.locator(f'[skn-id="{SKN_PAGAR_CONTA}"]').first
+    await wrapper.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
+    check = wrapper.locator('input[type="checkbox"]').first
+    marcado = False
+    if await check.count():
+        try:
+            marcado = await check.is_checked()
+        except Exception:
+            marcado = False
+    if not marcado:
+        await wrapper.locator("span.switchery").first.click()
+
+    campo = modal.locator(
+        f'[skn-id="{SKN_DT_PAGAMENTO}"] input[ng-model="sknField"]'
+    ).first
+    await expect(campo).to_be_enabled(timeout=TIMEOUT_CURTO_MS)
+
+
+async def _abrir_modal_financeiro(page, ng_click: str, controller: str):
+    botao = page.locator(f'a[ng-click="{ng_click}"]:visible').first
+    await botao.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
+    await botao.click()
+
+    modal = page.locator(f'main[ng-controller="{controller}"]:visible').last
+    await modal.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
+    await modal.locator(
+        f'[skn-id="{SKN_DESCRICAO}"] input[ng-model="sknField"]'
+    ).first.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
+    return modal
+
+
+async def _erro_campos(modal) -> str:
+    try:
+        labels = await modal.evaluate(
+            """
+            (root) => Array.from(root.querySelectorAll('.md-input-danger')).map((el) => {
+                const wrapper = el.closest('.md-input-wrapper');
+                const label = wrapper ? wrapper.querySelector('label') : null;
+                return (label ? label.textContent : '').replace(/\\s+/g, ' ').trim();
+            }).filter(Boolean)
+            """
+        )
+    except Exception:
+        labels = []
+    unicos = list(dict.fromkeys(x for x in labels if x))
+    return ", ".join(unicos)
+
+
+async def _salvar_modal_financeiro(page, modal, dialogos: list[str]) -> None:
+    from playwright.async_api import expect
+
+    botao = modal.locator('a:has-text("Salvar")').last
+    await botao.click()
+
+    try:
+        await expect(modal).to_be_hidden(timeout=TIMEOUT_PADRAO_MS)
+        return
+    except Exception:
+        pass
+
+    campos = await _erro_campos(modal)
+    mensagem = "Cloudfy nao confirmou o salvamento do lancamento."
+    if campos:
+        mensagem += f" Campos com erro: {campos}."
+    if dialogos:
+        mensagem += f" Mensagem do Cloudfy: {dialogos[-1]}"
+
+    # Fecha o modal com erro para o próximo item não reutilizar o formulário.
+    try:
+        await modal.locator('a:has-text("Cancelar")').last.click()
+        await expect(modal).to_be_hidden(timeout=TIMEOUT_CURTO_MS)
+    except Exception:
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+    raise RuntimeError(mensagem)
+
+
+async def abrir_financeiro(page, usuario: str, senha: str) -> None:
+    inicio = time.perf_counter()
+    await page.goto(FINANCEIRO_URL, wait_until="domcontentloaded")
+    if _url_login(page.url) or await tem_form_login(page):
+        await login(page, usuario, senha)
+        await page.goto(FINANCEIRO_URL, wait_until="domcontentloaded")
+
+    try:
+        await page.wait_for_function(JS_FINANCEIRO_PRONTO, timeout=TIMEOUT_PADRAO_MS)
+    except Exception as exc:
+        raise RuntimeError(
+            "Gerenciador financeiro do Cloudfy nao carregou "
+            "(botoes 'Novo pagamento'/'Nova transferencia' ausentes)."
+        ) from exc
+    _marcar("financeiro.tela", inicio)
+
+
+async def lancar_transferencia_financeira(
+    page, item: dict[str, Any], config: dict, dialogos: list[str]
+) -> None:
+    modal = await _abrir_modal_financeiro(
+        page, "onNovaTransferencia()", "H02SF0201J"
+    )
+    await _preencher_campo(
+        modal, SKN_DESCRICAO, str(item.get("descricao") or "MOEDAS").upper()
+    )
+    await _preencher_campo(modal, SKN_VALOR, _valor_br(item.get("valor")))
+    await _preencher_campo(modal, SKN_DT_TRANSF, _data_br(item.get("data")))
+    await _selecionar_opcao(
+        modal, SKN_CONTA_ORIGEM, config.get("financeiro_origem") or "CAIXA ADM"
+    )
+    await _selecionar_opcao(
+        modal, SKN_CONTA_DESTINO, config.get("financeiro_destino") or "MOEDAS"
+    )
+    await _salvar_modal_financeiro(page, modal, dialogos)
+
+
+async def lancar_pagamento_financeiro(
+    page, item: dict[str, Any], config: dict, dialogos: list[str]
+) -> None:
+    modal = await _abrir_modal_financeiro(page, "onNovoPagamento()", "H02SF0201B")
+    await _preencher_campo(
+        modal, SKN_DESCRICAO, str(item.get("descricao") or "DESPESA").upper()
+    )
+    await _preencher_campo(modal, SKN_VALOR, _valor_br(item.get("valor")))
+    await _preencher_campo(modal, SKN_DT_VENC, _data_br(item.get("data")))
+    await _toggle_pagar_conta(modal)
+    await _preencher_campo(modal, SKN_DT_PAGAMENTO, _data_br(item.get("data")))
+    await _selecionar_opcao(
+        modal, SKN_CATEGORIA, config.get("financeiro_categoria") or "02.03.01 Fornecedores"
+    )
+    await _selecionar_opcao(
+        modal, SKN_CONTA, config.get("financeiro_conta") or "CAIXA ADM"
+    )
+    await _selecionar_opcao(
+        modal,
+        SKN_CENTRO_CUSTO,
+        config.get("financeiro_centro_custo") or "LAGOA CAFE CONVENIENCIA",
+    )
+    await _selecionar_opcao(
+        modal,
+        SKN_TIPO_DOCUMENTO,
+        config.get("financeiro_tipo_documento") or "DINHEIRO",
+    )
+    fornecedor = str(config.get("financeiro_fornecedor") or "").strip()
+    if fornecedor:
+        await _selecionar_opcao(modal, SKN_FORNECEDOR, fornecedor)
+    await _salvar_modal_financeiro(page, modal, dialogos)
+
+
+async def executar_lancamentos_financeiros(
+    page, itens: list[dict[str, Any]], config: dict
+) -> dict[str, Any]:
+    """Executa os lançamentos em sequência. Falha de um item não aborta os demais."""
+    dialogos: list[str] = []
+
+    async def _handler(dialog):
+        try:
+            dialogos.append(dialog.message)
+        except Exception:
+            pass
+        try:
+            await dialog.accept()
+        except Exception:
+            pass
+
+    try:
+        page.on("dialog", _handler)
+    except Exception:
+        pass
+
+    resultados: list[dict[str, Any]] = []
+    try:
+        for posicao, item in enumerate(itens):
+            if page.is_closed():
+                for resto in itens[posicao:]:
+                    resultados.append({
+                        "chave": resto.get("chave"),
+                        "ok": False,
+                        "erro": "Sessao do Cloudfy caiu durante o lote.",
+                    })
+                break
+            try:
+                if item.get("tipo") == TIPO_MOEDAS:
+                    await lancar_transferencia_financeira(
+                        page, item, config, dialogos
+                    )
+                elif item.get("tipo") == TIPO_DESPESA:
+                    await lancar_pagamento_financeiro(page, item, config, dialogos)
+                else:
+                    raise RuntimeError(
+                        f"Tipo de lancamento desconhecido: {item.get('tipo')}"
+                    )
+                resultados.append({
+                    "chave": item.get("chave"),
+                    "ok": True,
+                    "erro": "",
+                })
+            except Exception as exc:  # noqa: BLE001 - reporta por item
+                logger.warning(
+                    "[automacao] falha no lancamento financeiro %s: %s",
+                    item.get("chave"),
+                    exc,
+                )
+                resultados.append({
+                    "chave": item.get("chave"),
+                    "ok": False,
+                    "erro": str(exc),
+                })
+    finally:
+        try:
+            page.remove_listener("dialog", _handler)
+        except Exception:
+            pass
+
+    return {"resultados": resultados, "total": len(resultados)}
+
+
 async def abrir_relatorio_descontos(page, context, usuario: str, senha: str):
     inicio = time.perf_counter()
     await page.goto(HOME_URL, wait_until="domcontentloaded")
@@ -921,3 +1329,22 @@ def lancar_caixa_cloudfy(
 def baixar_descontos_cloudfy(login: str, senha: str, debug: bool = False, otimizar: bool = True) -> dict:
     """Baixa o relatorio de descontos (por cupom) e filtra 'Venda a prazo'."""
     return _sessao().descontos(login, senha, debug=debug, otimizar=otimizar)
+
+
+def lancar_financeiro_cloudfy(
+    login: str,
+    senha: str,
+    itens: list[dict],
+    config: dict,
+    debug: bool = False,
+    otimizar: bool = True,
+) -> dict:
+    """Lança transferências/pagamentos no gerenciador financeiro. Headless."""
+    return _sessao().lancar_financeiro(
+        login,
+        senha,
+        itens,
+        config,
+        debug=debug,
+        otimizar=otimizar,
+    )

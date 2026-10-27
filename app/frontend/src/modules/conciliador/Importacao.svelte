@@ -99,20 +99,59 @@
   let splitMode = $state(false);
   let splitTime = $state("");
   let activeTurno = $state(1);
+  type NotaDespesa = {
+    id: string;
+    descricao: string;
+    valor: number;
+    legado?: boolean;
+  };
+  type FinanceiroItem = {
+    chave: string;
+    tipo: "transferencia_moedas" | "despesa";
+    descricao: string;
+    valor: number;
+    valor_atual: number | null;
+    alterado: boolean;
+    data: string;
+    caixa_id: string;
+    turno: number | null;
+    nota_id: string | null;
+    status: string;
+    selecionavel: boolean;
+    legado: boolean;
+    complemento: boolean;
+    erro: string;
+    lancado_em: string;
+    detalhe: string;
+  };
   type RestTurno = {
     categorias: Record<string, any>;
     sistemaVars: Record<string, string>;
     realVars: Record<string, string>;
     contagens: any[];
     avulsos: any[];
-    dinheiro_ajuste: number;
+    despesas_notas: NotaDespesa[];
   };
   let turnoStore = $state<Record<number, RestTurno>>({ 1: null as any, 2: null as any });
   let showSplitModal = $state(false);
   let splitModalTime = $state("");
 
-  // Ajuste manual do DINHEIRO: real = total da contagem + ajuste
-  let dinheiroAjuste = $state(0);
+  // Notas de despesa: cada uma soma no DINHEIRO real e pode ser lançada no financeiro.
+  let despesasNotas = $state<NotaDespesa[]>([]);
+  let novaDespesaDesc = $state("");
+  let novaDespesaValor = $state("");
+
+  // Revisão/lançamento financeiro
+  let showFinanceiro = $state(false);
+  let financeiroItens = $state<FinanceiroItem[]>([]);
+  let financeiroResumo = $state<any>(null);
+  let financeiroSel = $state<Record<string, boolean>>({});
+  let financeiroLoading = $state(false);
+  let financeiroRodando = $state(false);
+  let financeiroErro = $state("");
+  let financeiroMensagem = $state("");
+  let financeiroPrecisaFechar = $state(false);
+  let resumoFinanceiroKey = "";
   // CSV importado manualmente (mantido em memoria para permitir dividir depois)
   let lastRestFile: File | null = null;
   let lastRestFileDate = "";
@@ -148,6 +187,8 @@
   let autosaving = $state(false);
   let lastSavedAt = $state("");
   let savingInFlight = false;
+  let lastSaveError = $state(false);
+  let persistChain: Promise<string | null> = Promise.resolve(null);
   let toastMessage = $state("");
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -281,12 +322,12 @@
         initPostoSistemaVars();
         handleContagemChange();
       } else {
-        dinheiroAjuste = Number(doc.dinheiro_ajuste || 0);
+        despesasNotas = normalizarNotasDoc(doc, "caixa");
         if (doc.split_mode && doc.turnos) {
           splitMode = true;
           splitTime = doc.split_time || "";
-          turnoStore[1] = normalizeTurno(doc.turnos["1"]);
-          turnoStore[2] = normalizeTurno(doc.turnos["2"]);
+          turnoStore[1] = normalizeTurno(doc.turnos["1"], 1);
+          turnoStore[2] = normalizeTurno(doc.turnos["2"], 2);
           activeTurno = 1;
           loadTurno(1);
           initRestSistemaVars();
@@ -295,6 +336,7 @@
           turno = doc.turno === 1 ? "T1" : doc.turno === 2 ? "T2" : "Todos";
           initRestSistemaVars();
           initRestRealLabels();
+          recalcDinheiroReal();
         }
       }
     } catch (e: any) {
@@ -548,11 +590,11 @@
       realVars: rvars,
       contagens: [emptyGeralContagem()],
       avulsos: [],
-      dinheiro_ajuste: 0,
+      despesas_notas: [],
     };
   }
 
-  function normalizeTurno(raw: any): RestTurno {
+  function normalizeTurno(raw: any, numero: number): RestTurno {
     const base = emptyRestTurno();
     if (!raw) return base;
     return {
@@ -564,7 +606,7 @@
           ? raw.contagens
           : base.contagens,
       avulsos: Array.isArray(raw.avulsos) ? raw.avulsos : [],
-      dinheiro_ajuste: Number(raw.dinheiro_ajuste || 0),
+      despesas_notas: normalizarNotasDoc(raw, String(numero)),
     };
   }
 
@@ -575,7 +617,7 @@
       realVars: { ...realVars },
       contagens: JSON.parse(JSON.stringify(contagensDinheiro)),
       avulsos: JSON.parse(JSON.stringify(lancamentosAvulsos)),
-      dinheiro_ajuste: dinheiroAjuste,
+      despesas_notas: JSON.parse(JSON.stringify(despesasNotas)),
     };
   }
 
@@ -592,7 +634,8 @@
     realVars = rv;
     contagensDinheiro = s.contagens;
     lancamentosAvulsos = s.avulsos;
-    dinheiroAjuste = Number(s.dinheiro_ajuste || 0);
+    despesasNotas = Array.isArray(s.despesas_notas) ? s.despesas_notas : [];
+    recalcDinheiroReal();
   }
 
   function switchTurno(n: number) {
@@ -618,6 +661,172 @@
     const [y, m, d] = String(iso || "").split("-");
     return y && m && d ? `${d}/${m}/${y}` : iso;
   }
+
+  function formatDateTime(valor: string): string {
+    if (!valor) return "";
+    const data = new Date(valor);
+    return isNaN(data.getTime()) ? valor : data.toLocaleString();
+  }
+
+  async function carregarResumoFinanceiro() {
+    const id = savedId;
+    if (!id || tipo !== "restaurante") return;
+    const chave = `${id}|${data}`;
+    if (resumoFinanceiroKey === chave) return;
+    resumoFinanceiroKey = chave;
+    try {
+      const res = await fetch(`/api/conciliador/financeiro/caixa/${id}/pendentes`);
+      if (!res.ok) return;
+      const resultado = await res.json();
+      if (id !== savedId) return;
+      financeiroItens = resultado.itens || [];
+      financeiroResumo = resultado.resumo || null;
+    } catch {
+      // resumo é best-effort
+    }
+  }
+
+  async function recarregarPendentesFinanceiro(abrirModal = false) {
+    if (!savedId) return;
+    financeiroLoading = true;
+    try {
+      const res = await fetch(
+        `/api/conciliador/financeiro/caixa/${savedId}/pendentes`,
+      );
+      const resultado = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        financeiroErro = resultado.detail || "Erro ao carregar os lancamentos.";
+        if (abrirModal) showFinanceiro = true;
+        return;
+      }
+      financeiroItens = resultado.itens || [];
+      financeiroResumo = resultado.resumo || null;
+      const selecao: Record<string, boolean> = {};
+      for (const item of financeiroItens) {
+        selecao[item.chave] = Boolean(item.selecionavel && !item.legado);
+      }
+      financeiroSel = selecao;
+      if (abrirModal) showFinanceiro = true;
+    } catch (e: any) {
+      financeiroErro = e?.message || "Erro de conexao.";
+      if (abrirModal) showFinanceiro = true;
+    } finally {
+      financeiroLoading = false;
+    }
+  }
+
+  async function abrirRevisaoFinanceira() {
+    if (tipo !== "restaurante") return;
+    financeiroErro = "";
+    financeiroMensagem = "";
+    financeiroPrecisaFechar = false;
+
+    if (!readonly) {
+      const id = await persistNow();
+      if (!id || lastSaveError) {
+        errorMessage = "Nao foi possivel salvar o caixa. Revise antes de lancar no financeiro.";
+        return;
+      }
+    }
+    if (!savedId) {
+      errorMessage = "Salve o caixa antes de revisar os lancamentos financeiros.";
+      return;
+    }
+    await recarregarPendentesFinanceiro(true);
+  }
+
+  function totalSelecionadoFinanceiro(): number {
+    return Math.round(
+      financeiroItens
+        .filter((item) => financeiroSel[item.chave])
+        .reduce((soma, item) => soma + Number(item.valor || 0), 0) * 100,
+    ) / 100;
+  }
+
+  async function executarLancamentoFinanceiro(chaves: string[], forcar = false) {
+    if (!savedId || !chaves.length) return;
+    financeiroRodando = true;
+    financeiroErro = "";
+    financeiroMensagem = "";
+    financeiroPrecisaFechar = false;
+    try {
+      const res = await fetch("/api/conciliador/financeiro/lancar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ caixa_id: savedId, chaves, forcar }),
+      });
+      const resultado = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detalhe = String(resultado.detail || "Erro ao lancar no financeiro.");
+        financeiroErro = detalhe;
+        financeiroPrecisaFechar =
+          res.status === 409 && detalhe.toLowerCase().includes("feche o navegador");
+        return;
+      }
+
+      const resultados = resultado.resultados || [];
+      const falhas = resultados.filter((r: any) => !r.ok);
+      const oks = resultados.length - falhas.length;
+      financeiroMensagem =
+        `${oks} lancamento(s) concluido(s).` +
+        (falhas.length ? ` ${falhas.length} falha(s).` : "");
+      if (falhas.length) {
+        financeiroErro = falhas
+          .map((r: any) => r.erro)
+          .filter(Boolean)
+          .join(" | ");
+      }
+      showToast(financeiroMensagem);
+      await recarregarPendentesFinanceiro(false);
+    } catch (e: any) {
+      financeiroErro = e?.message || "Erro de conexao.";
+    } finally {
+      financeiroRodando = false;
+    }
+  }
+
+  async function lancarFinanceiroSelecionado() {
+    const chaves = Object.entries(financeiroSel)
+      .filter(([, marcado]) => marcado)
+      .map(([chave]) => chave);
+    if (!chaves.length) {
+      financeiroErro = "Selecione pelo menos um lancamento.";
+      return;
+    }
+    await executarLancamentoFinanceiro(chaves);
+  }
+
+  async function relancarFinanceiro(item: FinanceiroItem) {
+    const valor = item.valor_atual ?? item.valor;
+    if (
+      !confirm(
+        `Relancar "${item.descricao}" (${formatMoney(valor)})? ` +
+          "Isso pode duplicar o lancamento no Cloudfy.",
+      )
+    ) {
+      return;
+    }
+    await executarLancamentoFinanceiro([item.chave], true);
+  }
+
+  async function fecharNavegadorAutomacao() {
+    financeiroPrecisaFechar = false;
+    financeiroErro = "";
+    try {
+      await fetch("/api/conciliador/automacao/navegador/fechar", {
+        method: "POST",
+      });
+      showToast("Navegador da automacao fechado.");
+    } catch {
+      financeiroErro = "Nao foi possivel fechar o navegador da automacao.";
+    }
+  }
+
+  $effect(() => {
+    if (!hydrated || tipo !== "restaurante") return;
+    if (!savedId) return;
+    void carregarResumoFinanceiro();
+  });
 
   async function openAutoSplit() {
     const found = turno1Fechamento(data);
@@ -647,7 +856,7 @@
         realVars: { ...realVars },
         contagens: JSON.parse(JSON.stringify(contagensDinheiro)),
         avulsos: JSON.parse(JSON.stringify(lancamentosAvulsos)),
-        dinheiro_ajuste: dinheiroAjuste,
+        despesas_notas: JSON.parse(JSON.stringify(despesasNotas)),
       };
       turnoStore[2] = emptyRestTurno();
       activeTurno = 1;
@@ -752,12 +961,141 @@
     categorias = categorias;
   }
 
+  function normalizarNota(raw: any, fallbackId: string): NotaDespesa | null {
+    if (!raw || typeof raw !== "object") return null;
+    const valor = Math.round(Number(raw.valor || 0) * 100) / 100;
+    if (!(valor > 0)) return null;
+    return {
+      id: String(raw.id || fallbackId),
+      descricao: String(raw.descricao || "DESPESA"),
+      valor,
+      legado: Boolean(raw.legado),
+    };
+  }
+
+  function normalizarNotasDoc(raw: any, prefixo = "nota"): NotaDespesa[] {
+    const lista = Array.isArray(raw?.despesas_notas) ? raw.despesas_notas : [];
+    const notas = lista
+      .map((n: any, i: number) => normalizarNota(n, `${prefixo}-${i}`))
+      .filter(Boolean) as NotaDespesa[];
+    if (notas.length) return notas;
+
+    const ajuste = Math.round(Number(raw?.dinheiro_ajuste || 0) * 100) / 100;
+    if (ajuste > 0) {
+      return [{
+        id: `legado-${prefixo}`,
+        descricao: "AJUSTE MANUAL",
+        valor: ajuste,
+        legado: true,
+      }];
+    }
+    return [];
+  }
+
+  function ajusteTotal(): number {
+    return Math.round(
+      despesasNotas.reduce((soma, nota) => soma + Number(nota.valor || 0), 0) * 100,
+    ) / 100;
+  }
+
+  function notaValorTexto(valor: number): string {
+    return Number(valor || 0).toFixed(2).replace(".", ",");
+  }
+
+  function recalcDinheiroReal() {
+    const real = Math.round((contagemTotal() + ajusteTotal()) * 100) / 100;
+    categorias["DINHEIRO"] = {
+      ...(categorias["DINHEIRO"] || { sistema: 0, real: 0 }),
+      sistema: Number(categorias["DINHEIRO"]?.sistema || 0),
+      real,
+    };
+    categorias = categorias;
+    syncRealVars();
+  }
+
+  function addNotaDespesa() {
+    const descricao = novaDespesaDesc.trim();
+    const valor = parseMoney(novaDespesaValor);
+    if (!descricao) {
+      errorMessage = "Informe a descricao da nota de despesa.";
+      return;
+    }
+    if (valor <= 0) {
+      errorMessage = "Valor da nota de despesa deve ser maior que zero.";
+      return;
+    }
+    despesasNotas = [
+      ...despesasNotas,
+      { id: crypto.randomUUID(), descricao, valor },
+    ];
+    novaDespesaDesc = "";
+    novaDespesaValor = "";
+    recalcDinheiroReal();
+  }
+
+  function updateNotaDescricao(id: string, valor: string) {
+    despesasNotas = despesasNotas.map((nota) =>
+      nota.id === id ? { ...nota, descricao: valor } : nota,
+    );
+  }
+
+  function updateNotaValor(id: string, texto: string) {
+    const valor = parseMoney(texto);
+    if (valor <= 0) {
+      errorMessage = "Valor da nota de despesa deve ser maior que zero.";
+      despesasNotas = [...despesasNotas];
+      return;
+    }
+    despesasNotas = despesasNotas.map((nota) =>
+      nota.id === id ? { ...nota, valor } : nota,
+    );
+    recalcDinheiroReal();
+  }
+
+  function notaStatus(id: string) {
+    const turno = splitMode ? activeTurno : null;
+    return financeiroItens.find(
+      (item) =>
+        item.tipo === "despesa" &&
+        item.nota_id === id &&
+        (turno === null || item.turno === turno),
+    );
+  }
+
+  function removeNotaDespesa(id: string) {
+    const nota = despesasNotas.find((n) => n.id === id);
+    if (!nota) return;
+    if (
+      notaStatus(id)?.lancado_em &&
+      !confirm(
+        "Esta nota ja foi lancada no financeiro. Remover so do caixa (o lancamento continua no Cloudfy)?",
+      )
+    ) {
+      return;
+    }
+    despesasNotas = despesasNotas.filter((n) => n.id !== id);
+    recalcDinheiroReal();
+  }
+
+  function limparNotasDespesa() {
+    if (!despesasNotas.length) return;
+    if (
+      despesasNotas.some((n) => notaStatus(n.id)?.lancado_em) &&
+      !confirm("Existem notas ja lancadas. Limpar as notas so do caixa?")
+    ) {
+      return;
+    }
+    despesasNotas = [];
+    recalcDinheiroReal();
+  }
+
   function handleRestRealChange(key: string, e: Event) {
+    if (key === "DINHEIRO") {
+      recalcDinheiroReal();
+      return;
+    }
     realVars[key] = (e.target as HTMLInputElement).value;
     const val = parseMoney(realVars[key]);
-    if (key === "DINHEIRO") {
-      dinheiroAjuste = Math.round((val - contagemTotal()) * 100) / 100;
-    }
     categorias[key] = { ...categorias[key], real: val };
     categorias = categorias;
   }
@@ -767,11 +1105,6 @@
     return Math.round(
       gerais.reduce((sum: number, c: any) => sum + Number(c.total || 0), 0) * 100,
     ) / 100;
-  }
-
-  function resetDinheiroAjuste() {
-    dinheiroAjuste = 0;
-    handleContagemChange();
   }
 
   function getRestDiff(key: string): number {
@@ -862,14 +1195,7 @@
 
   function handleContagemChange() {
     if (tipo === "restaurante") {
-      const dinheiroReal = Math.round((contagemTotal() + dinheiroAjuste) * 100) / 100;
-      categorias["DINHEIRO"] = {
-        ...categorias["DINHEIRO"],
-        sistema: categorias["DINHEIRO"].sistema,
-        real: dinheiroReal,
-      };
-      categorias = categorias;
-      syncRealVars();
+      recalcDinheiroReal();
     } else {
       const geral = contagensDinheiro.find((c: any) => c.label === "Geral");
       const cashTotal = geral?.total || 0;
@@ -944,7 +1270,7 @@
         realVars: { ...realVars },
         contagens: JSON.parse(JSON.stringify(contagensDinheiro)),
         avulsos: JSON.parse(JSON.stringify(lancamentosAvulsos)),
-        dinheiro_ajuste: dinheiroAjuste,
+        despesas_notas: JSON.parse(JSON.stringify(despesasNotas)),
       };
       turnoStore[2] = emptyRestTurno();
       splitMode = true;
@@ -1165,6 +1491,12 @@
     } catch {
       // if validation endpoint fails, proceed
     }
+    if (autosaveTimer) {
+      clearTimeout(autosaveTimer);
+      autosaveTimer = null;
+    }
+    // Garante que nenhum rascunho enfileirado sobrescreva o status conciliado.
+    await persistNow().catch(() => null);
     const payload = buildPayload("conciliado");
     try {
       const res = await fetch("/api/conciliador/conciliacoes", {
@@ -1222,9 +1554,18 @@
       base.turno = null;
       base.split_mode = true;
       base.split_time = splitTime;
+      const notasT1 = turnoStore[1]?.despesas_notas || [];
+      const notasT2 = turnoStore[2]?.despesas_notas || [];
       base.dinheiro_ajuste = Math.round(
-        ((turnoStore[1]?.dinheiro_ajuste || 0) + (turnoStore[2]?.dinheiro_ajuste || 0)) * 100,
+        [...notasT1, ...notasT2].reduce(
+          (soma, nota) => soma + Number(nota.valor || 0),
+          0,
+        ) * 100,
       ) / 100;
+      base.despesas_notas = [
+        ...notasT1.map((nota) => ({ ...nota, turno: 1 })),
+        ...notasT2.map((nota) => ({ ...nota, turno: 2 })),
+      ];
       base.turnos = {
         "1": turnoStore[1],
         "2": turnoStore[2],
@@ -1241,7 +1582,8 @@
       ];
     } else {
       base.turno = turno === "T1" ? 1 : turno === "T2" ? 2 : null;
-      base.dinheiro_ajuste = dinheiroAjuste;
+      base.dinheiro_ajuste = ajusteTotal();
+      base.despesas_notas = despesasNotas;
     }
     return base;
   }
@@ -1252,9 +1594,8 @@
     onResultado(payload);
   }
 
-  async function persistNow(): Promise<string | null> {
+  async function doPersist(): Promise<string | null> {
     if (readonly) return savedId;
-    if (savingInFlight) return savedId;
     savingInFlight = true;
     autosaving = true;
     try {
@@ -1271,9 +1612,12 @@
           onIdChange?.(result.id);
         }
         lastSavedAt = new Date().toLocaleTimeString();
+        lastSaveError = false;
+      } else {
+        lastSaveError = true;
       }
     } catch {
-      // silent - autosave is best-effort
+      lastSaveError = true;
     } finally {
       autosaving = false;
       savingInFlight = false;
@@ -1281,10 +1625,18 @@
     return savedId;
   }
 
+  function persistNow(): Promise<string | null> {
+    if (readonly) return Promise.resolve(savedId);
+    persistChain = persistChain
+      .catch(() => savedId)
+      .then(() => doPersist());
+    return persistChain;
+  }
+
   function scheduleAutosave() {
     if (!hydrated || readonly) return;
     if (autosaveTimer) clearTimeout(autosaveTimer);
-    autosaveTimer = setTimeout(() => { if (!savingInFlight) persistNow(); }, 800);
+    autosaveTimer = setTimeout(() => { void persistNow(); }, 800);
   }
 
   $effect(() => {
@@ -1295,6 +1647,7 @@
     void JSON.stringify(contagensDinheiro);
     void JSON.stringify(lancamentosAvulsos);
     void JSON.stringify(premmiaLancamentos);
+    void JSON.stringify(despesasNotas);
     void fitcardTotal;
     void sangria;
     void notasPrazo;
@@ -1302,7 +1655,6 @@
     void observacoes;
     void splitMode;
     void splitTime;
-    void dinheiroAjuste;
     scheduleAutosave();
   });
 
@@ -1859,23 +2211,16 @@
                       oninput={(e) => handleRestRealChange(key, e)}
                       onkeydown={(e) => { if (e.key==='Enter') { e.preventDefault(); const t=e.target as HTMLInputElement; const evaled=evalExpression(t.value); if (evaled!==t.value) { t.value=evaled; handleRestRealChange(key, {target:t} as any); } } }}
                       disabled={readonly}
+                      readonly={key === "DINHEIRO"}
                       placeholder="0,00"
                       class="w-28 rounded-md border px-2 py-1 text-sm"
-                      class:border-amber-500={key === "DINHEIRO" && dinheiroAjuste !== 0}
-                      class:bg-amber-50={key === "DINHEIRO" && dinheiroAjuste !== 0}
-                      class:text-amber-800={key === "DINHEIRO" && dinheiroAjuste !== 0}
+                      class:border-amber-500={key === "DINHEIRO" && ajusteTotal() !== 0}
+                      class:bg-amber-50={key === "DINHEIRO" && ajusteTotal() !== 0}
+                      class:text-amber-800={key === "DINHEIRO" && ajusteTotal() !== 0}
                     />
-                    {#if key === "DINHEIRO" && dinheiroAjuste !== 0}
+                    {#if key === "DINHEIRO" && ajusteTotal() !== 0}
                       <div class="mt-0.5 text-[10px] leading-tight text-amber-700">
-                        contagem {formatMoney(contagemTotal())} + ajuste {formatMoney(dinheiroAjuste)}
-                        <button
-                          type="button"
-                          class="ml-1 underline hover:no-underline disabled:opacity-50"
-                          onclick={resetDinheiroAjuste}
-                          disabled={readonly}
-                        >
-                          usar contagem
-                        </button>
+                        contagem {formatMoney(contagemTotal())} + notas {formatMoney(ajusteTotal())}
                       </div>
                     {/if}
                   </td>
@@ -1913,6 +2258,123 @@
         serialMode={serial200Mode}
       />
     </div>
+
+    {#if tipo === "restaurante"}
+      <!-- Lançamentos financeiros: moedas + notas de despesa -->
+      <div class="mb-4 rounded-lg border p-4">
+        <div class="mb-3 flex flex-wrap items-center gap-2">
+          <h3 class="text-sm font-semibold">
+            Lancamentos financeiros{splitMode ? ` — Turno ${activeTurno}` : ""}
+          </h3>
+          <span class="text-xs text-muted-foreground">
+            Notas de despesa somam no DINHEIRO real
+          </span>
+          <button
+            onclick={abrirRevisaoFinanceira}
+            disabled={loading || financeiroLoading}
+            class="ml-auto inline-flex h-8 items-center rounded-md border border-primary px-3 text-sm text-primary hover:bg-accent disabled:opacity-50"
+          >
+            {financeiroLoading ? "Carregando..." : "Revisar e lancar"}
+          </button>
+        </div>
+
+        <div class="mb-3 grid gap-2 rounded-md border bg-muted/30 p-3 text-sm sm:grid-cols-2">
+          <div>
+            <p class="font-medium">Transferencia MOEDAS</p>
+            <p class="text-muted-foreground">
+              {financeiroResumo ? formatMoney(financeiroResumo.moedas_total) : "—"}
+              · {formatDateBR(data)}
+            </p>
+            {#if financeiroResumo?.moedas_lancado > 0}
+              <p class="text-xs text-green-700">
+                Ja lancado: {formatMoney(financeiroResumo.moedas_lancado)}
+              </p>
+            {/if}
+            {#if financeiroResumo?.moedas_pendente > 0}
+              <p class="text-xs text-amber-700">
+                Pendente: {formatMoney(financeiroResumo.moedas_pendente)}
+              </p>
+            {/if}
+          </div>
+          <div>
+            <p class="font-medium">Notas de despesa ({despesasNotas.length})</p>
+            <p class="text-muted-foreground">Total: {formatMoney(ajusteTotal())}</p>
+          </div>
+        </div>
+
+        {#if despesasNotas.length}
+          <div class="space-y-2">
+            {#each despesasNotas as nota (nota.id)}
+              <div class="flex flex-wrap items-center gap-2">
+                <input
+                  type="text"
+                  value={nota.descricao}
+                  oninput={(e) => updateNotaDescricao(nota.id, (e.target as HTMLInputElement).value)}
+                  disabled={readonly}
+                  placeholder="Descricao da nota"
+                  class="min-w-0 flex-1 rounded-md border px-2 py-1 text-sm"
+                />
+                <input
+                  type="text"
+                  value={notaValorTexto(nota.valor)}
+                  onchange={(e) => updateNotaValor(nota.id, (e.target as HTMLInputElement).value)}
+                  disabled={readonly}
+                  class="w-28 rounded-md border px-2 py-1 text-right text-sm"
+                />
+                <button
+                  onclick={() => removeNotaDespesa(nota.id)}
+                  disabled={readonly}
+                  class="text-xs text-red-600 hover:underline disabled:opacity-50"
+                >
+                  Remover
+                </button>
+                {#if notaStatus(nota.id)?.lancado_em}
+                  <span class="rounded bg-green-100 px-2 py-0.5 text-[10px] font-medium text-green-800">
+                    Lancado
+                  </span>
+                {/if}
+                {#if nota.legado}
+                  <span class="rounded bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800">
+                    Legado
+                  </span>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        {#if !readonly}
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              bind:value={novaDespesaDesc}
+              placeholder="Descricao da nota de despesa"
+              class="min-w-0 flex-1 rounded-md border px-2 py-1 text-sm"
+            />
+            <input
+              type="text"
+              bind:value={novaDespesaValor}
+              placeholder="0,00"
+              class="w-28 rounded-md border px-2 py-1 text-right text-sm"
+            />
+            <button
+              onclick={addNotaDespesa}
+              class="inline-flex h-8 items-center rounded-md bg-primary px-3 text-sm text-primary-foreground hover:bg-primary/90"
+            >
+              Adicionar nota
+            </button>
+            {#if despesasNotas.length}
+              <button
+                onclick={limparNotasDespesa}
+                class="inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-accent"
+              >
+                Limpar notas
+              </button>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    {/if}
 
     <!-- Lancamentos Avulsos -->
     <div class="mb-4 rounded-lg border p-4">
@@ -2034,6 +2496,151 @@
       Ver Resultado
     </button>
   </div>
+
+  {#if showFinanceiro}
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div class="max-h-[88vh] w-full max-w-3xl overflow-auto rounded-lg border bg-background p-4 shadow-xl">
+        <div class="mb-3 flex flex-wrap items-center gap-2">
+          <h3 class="text-base font-semibold">Lancamentos financeiros</h3>
+          <span class="text-xs text-muted-foreground">
+            Caixa {formatDateBR(data)}
+          </span>
+          <button
+            onclick={() => (showFinanceiro = false)}
+            disabled={financeiroRodando}
+            class="ml-auto inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-accent disabled:opacity-50"
+          >
+            Fechar
+          </button>
+        </div>
+
+        {#if financeiroErro}
+          <div class="mb-3 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-700">
+            {financeiroErro}
+            {#if financeiroPrecisaFechar}
+              <button
+                onclick={fecharNavegadorAutomacao}
+                class="ml-2 underline hover:no-underline"
+              >
+                Fechar navegador
+              </button>
+            {/if}
+          </div>
+        {/if}
+
+        {#if financeiroMensagem}
+          <p class="mb-3 text-sm text-green-700">{financeiroMensagem}</p>
+        {/if}
+
+        {#if financeiroResumo?.bloqueado}
+          <p class="mb-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+            {financeiroResumo.motivo_bloqueio}
+          </p>
+        {/if}
+
+        {#if financeiroItens.length === 0}
+          <p class="text-sm text-muted-foreground">
+            Nenhum lancamento pendente neste caixa.
+          </p>
+        {:else}
+          <div class="space-y-2">
+            {#each financeiroItens as item (item.chave)}
+              <div
+                class="flex items-start gap-3 rounded-md border p-3"
+                class:opacity-70={!item.selecionavel}
+              >
+                {#if item.selecionavel}
+                  <input
+                    type="checkbox"
+                    checked={financeiroSel[item.chave] || false}
+                    onchange={(e) => {
+                      financeiroSel = {
+                        ...financeiroSel,
+                        [item.chave]: (e.target as HTMLInputElement).checked,
+                      };
+                    }}
+                    class="mt-1"
+                  />
+                {:else}
+                  <span class="mt-1 inline-block h-4 w-4"></span>
+                {/if}
+
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-sm font-medium">
+                      {item.tipo === "transferencia_moedas"
+                        ? "Transferencia MOEDAS"
+                        : item.descricao}
+                    </span>
+                    <span class="text-sm font-semibold">{formatMoney(item.valor)}</span>
+                    {#if item.turno}
+                      <span class="text-xs text-muted-foreground">Turno {item.turno}</span>
+                    {/if}
+                    {#if item.complemento}
+                      <span class="rounded bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-800">
+                        Complemento T2
+                      </span>
+                    {/if}
+                    {#if item.legado}
+                      <span class="rounded bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800">
+                        Legado
+                      </span>
+                    {/if}
+                    {#if item.lancado_em}
+                      <span class="rounded bg-green-100 px-2 py-0.5 text-[10px] font-medium text-green-800">
+                        Lancado {formatDateTime(item.lancado_em)}
+                      </span>
+                    {/if}
+                    {#if item.status === "divergente"}
+                      <span class="rounded bg-red-100 px-2 py-0.5 text-[10px] font-medium text-red-800">
+                        Divergente
+                      </span>
+                    {/if}
+                  </div>
+                  <p class="text-xs text-muted-foreground">{item.detalhe}</p>
+                  {#if item.alterado}
+                    <p class="text-xs text-amber-700">
+                      Valor no caixa mudou: atual {formatMoney(item.valor_atual || 0)}.
+                    </p>
+                  {/if}
+                  {#if item.erro}
+                    <p class="text-xs text-red-600">{item.erro}</p>
+                  {/if}
+                </div>
+
+                {#if !item.selecionavel && item.status !== "divergente"}
+                  <button
+                    onclick={() => relancarFinanceiro(item)}
+                    disabled={financeiroRodando || financeiroLoading}
+                    class="text-xs text-primary underline hover:no-underline disabled:opacity-50"
+                  >
+                    Relancar
+                  </button>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        <div class="mt-4 flex flex-wrap items-center gap-2 border-t pt-3">
+          <span class="text-sm">
+            Selecionado: {formatMoney(totalSelecionadoFinanceiro())}
+          </span>
+          <button
+            onclick={lancarFinanceiroSelecionado}
+            disabled={financeiroRodando ||
+              financeiroLoading ||
+              !financeiroItens.some(
+                (item) => item.selecionavel && financeiroSel[item.chave],
+              )}
+            class="ml-auto inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {financeiroRodando ? "Lancando..." : "Lancar selecionados"}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   {#if showAutomacao}
     <AutomacaoModal

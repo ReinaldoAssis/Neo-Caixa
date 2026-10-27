@@ -27,6 +27,16 @@
   let otimizarAutomacao = $state(true);
   let savingCloudfy = $state(false);
 
+  let financeiroOrigem = $state("CAIXA ADM");
+  let financeiroDestino = $state("MOEDAS");
+  let financeiroDescricaoMoedas = $state("MOEDAS");
+  let financeiroCategoria = $state("02.03.01 Fornecedores");
+  let financeiroConta = $state("CAIXA ADM");
+  let financeiroCentroCusto = $state("LAGOA CAFE CONVENIENCIA");
+  let financeiroTipoDocumento = $state("DINHEIRO");
+  let financeiroFornecedor = $state("");
+  let savingFinanceiro = $state(false);
+
   let cloudfyMap = $state<Record<string, string>>({});
   let savingMap = $state(false);
   let cloudfyPadrao = $state<Record<string, string>>({});
@@ -149,6 +159,14 @@
         cloudfyDebug = s.cloudfy_debug || false;
         otimizarAutomacao = s.otimizar_automacao !== false;
         relatorioCsvDir = s.relatorio_csv_dir || "";
+        financeiroOrigem = s.financeiro_origem || "CAIXA ADM";
+        financeiroDestino = s.financeiro_destino || "MOEDAS";
+        financeiroDescricaoMoedas = s.financeiro_descricao_moedas || "MOEDAS";
+        financeiroCategoria = s.financeiro_categoria || "02.03.01 Fornecedores";
+        financeiroConta = s.financeiro_conta || "CAIXA ADM";
+        financeiroCentroCusto = s.financeiro_centro_custo || "LAGOA CAFE CONVENIENCIA";
+        financeiroTipoDocumento = s.financeiro_tipo_documento || "DINHEIRO";
+        financeiroFornecedor = s.financeiro_fornecedor || "";
       }
       const mres = await fetch("/api/conciliador/config/mapeamento");
       if (mres.ok) {
@@ -218,6 +236,32 @@
       flash(e.message, "err");
     } finally {
       savingCloudfy = false;
+    }
+  }
+
+  async function saveFinanceiro() {
+    savingFinanceiro = true;
+    try {
+      const res = await fetch("/api/conciliador/config/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          financeiro_origem: financeiroOrigem,
+          financeiro_destino: financeiroDestino,
+          financeiro_descricao_moedas: financeiroDescricaoMoedas,
+          financeiro_categoria: financeiroCategoria,
+          financeiro_conta: financeiroConta,
+          financeiro_centro_custo: financeiroCentroCusto,
+          financeiro_tipo_documento: financeiroTipoDocumento,
+          financeiro_fornecedor: financeiroFornecedor,
+        }),
+      });
+      if (!res.ok) throw new Error("Erro ao salvar configuracoes do financeiro");
+      flash("Configuracoes do financeiro salvas.");
+    } catch (e: any) {
+      flash(e.message, "err");
+    } finally {
+      savingFinanceiro = false;
     }
   }
 
@@ -649,6 +693,89 @@
               {savingCloudfy ? "Salvando..." : "Salvar credenciais"}
             </button>
           </div>
+        </div>
+
+        <!-- Financeiro -->
+        <div class="border p-4">
+          <h2 class="text-sm font-semibold">Financeiro - lancamentos do caixa</h2>
+          <p class="mb-3 text-xs text-muted-foreground">
+            Valores procurados por texto nas opcoes do Cloudfy
+            (transferencia de moedas e pagamento de despesas).
+          </p>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <label class="text-sm">
+              <span class="mb-1 block text-muted-foreground">Conta de origem (MOEDAS)</span>
+              <input
+                type="text"
+                bind:value={financeiroOrigem}
+                class="w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+              />
+            </label>
+            <label class="text-sm">
+              <span class="mb-1 block text-muted-foreground">Conta de destino (MOEDAS)</span>
+              <input
+                type="text"
+                bind:value={financeiroDestino}
+                class="w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+              />
+            </label>
+            <label class="text-sm">
+              <span class="mb-1 block text-muted-foreground">Descricao da transferencia</span>
+              <input
+                type="text"
+                bind:value={financeiroDescricaoMoedas}
+                class="w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+              />
+            </label>
+            <label class="text-sm">
+              <span class="mb-1 block text-muted-foreground">Categoria da despesa</span>
+              <input
+                type="text"
+                bind:value={financeiroCategoria}
+                class="w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+              />
+            </label>
+            <label class="text-sm">
+              <span class="mb-1 block text-muted-foreground">Conta da despesa</span>
+              <input
+                type="text"
+                bind:value={financeiroConta}
+                class="w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+              />
+            </label>
+            <label class="text-sm">
+              <span class="mb-1 block text-muted-foreground">Centro de custo</span>
+              <input
+                type="text"
+                bind:value={financeiroCentroCusto}
+                class="w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+              />
+            </label>
+            <label class="text-sm">
+              <span class="mb-1 block text-muted-foreground">Tipo de documento</span>
+              <input
+                type="text"
+                bind:value={financeiroTipoDocumento}
+                class="w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+              />
+            </label>
+            <label class="text-sm">
+              <span class="mb-1 block text-muted-foreground">Fornecedor (opcional)</span>
+              <input
+                type="text"
+                bind:value={financeiroFornecedor}
+                placeholder="Opcional; preencha se o Cloudfy exigir"
+                class="w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+              />
+            </label>
+          </div>
+          <button
+            onclick={saveFinanceiro}
+            disabled={savingFinanceiro}
+            class="mt-3 inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {savingFinanceiro ? "Salvando..." : "Salvar financeiro"}
+          </button>
         </div>
 
         <!-- Atualizacoes -->

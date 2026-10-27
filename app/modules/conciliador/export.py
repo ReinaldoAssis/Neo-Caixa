@@ -123,13 +123,22 @@ def generate_conciliation_pdf_bytes(caixa: dict, posto_config: dict | None = Non
             if turnos:
                 for numero in ("1", "2"):
                     turno_data = turnos.get(numero) or {}
-                    ajuste_turno = float(turno_data.get("dinheiro_ajuste", 0) or 0)
-                    if ajuste_turno:
-                        ajustes.append(
-                            f"Turno {numero} - ajuste manual do DINHEIRO: "
-                            f"{format_money(ajuste_turno)}"
-                        )
+                    for nota in turno_data.get("despesas_notas") or []:
+                        valor_nota = float(nota.get("valor", 0) or 0)
+                        if valor_nota:
+                            descricao = str(nota.get("descricao") or "DESPESA")
+                            ajustes.append(
+                                f"Turno {numero} - {descricao}: "
+                                f"{format_money(valor_nota)}"
+                            )
             else:
+                for nota in caixa.get("despesas_notas") or []:
+                    valor_nota = float(nota.get("valor", 0) or 0)
+                    if valor_nota:
+                        descricao = str(nota.get("descricao") or "DESPESA")
+                        ajustes.append(f"{descricao}: {format_money(valor_nota)}")
+
+            if not ajustes:
                 ajuste_total = float(caixa.get("dinheiro_ajuste", 0) or 0)
                 if ajuste_total:
                     ajustes.append(

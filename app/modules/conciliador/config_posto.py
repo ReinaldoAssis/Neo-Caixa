@@ -159,6 +159,19 @@ CONTAGEM_TAB_BEHAVIORS = ("icone", "icone_fixo")
 #   opcional_todas    -> serial opcional em todas as contagens
 SERIAL_200_MODES = ("obrigatorio_todas", "opcional_geral", "opcional_todas")
 
+# Valores usados pelo atalho de lançamentos financeiros do caixa restaurante.
+# São textos procurados nas opções do selectize do Cloudfy.
+DEFAULT_FINANCEIRO = {
+    "financeiro_origem": "CAIXA ADM",
+    "financeiro_destino": "MOEDAS",
+    "financeiro_descricao_moedas": "MOEDAS",
+    "financeiro_categoria": "02.03.01 Fornecedores",
+    "financeiro_conta": "CAIXA ADM",
+    "financeiro_centro_custo": "LAGOA CAFE CONVENIENCIA",
+    "financeiro_tipo_documento": "DINHEIRO",
+    "financeiro_fornecedor": "",
+}
+
 DEFAULT_SETTINGS = {
     "contagem_tab_behavior": "icone",
     "serial_200_mode": "obrigatorio_todas",
@@ -167,6 +180,7 @@ DEFAULT_SETTINGS = {
     "cloudfy_debug": False,
     "otimizar_automacao": True,
     "relatorio_csv_dir": "",
+    **DEFAULT_FINANCEIRO,
 }
 
 
@@ -194,6 +208,8 @@ def load_settings(database) -> dict:
         settings["cloudfy_debug"] = doc.get("cloudfy_debug", False)
         settings["otimizar_automacao"] = doc.get("otimizar_automacao", True)
         settings["relatorio_csv_dir"] = doc.get("relatorio_csv_dir", "")
+        for chave, padrao in DEFAULT_FINANCEIRO.items():
+            settings[chave] = doc.get(chave, padrao)
     return settings
 
 
@@ -227,6 +243,9 @@ def save_settings(database, data: dict) -> dict:
         settings["otimizar_automacao"] = bool(data.get("otimizar_automacao", True))
     if "relatorio_csv_dir" in data:
         settings["relatorio_csv_dir"] = str(data.get("relatorio_csv_dir", "")).strip()
+    for chave in DEFAULT_FINANCEIRO:
+        if chave in data:
+            settings[chave] = str(data.get(chave, "")).strip()
 
     payload = {"key": SETTINGS_KEY, **settings}
     existing = database.search(CONFIG_TABLE, {"key": SETTINGS_KEY})

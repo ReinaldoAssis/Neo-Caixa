@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Cloudfy financeiro falso</title>
+  <style>
+    body { font-family: sans-serif; margin: 24px; }
+    .uk-modal { position: fixed; inset: 0; background: rgba(0,0,0,.3); padding: 24px; overflow: auto; }
+    main { background: #fff; max-width: 900px; margin: 0 auto; padding: 16px; }
+    .row { margin: 8px 0; }
+    .selectize-input { border: 1px solid #999; min-height: 28px; padding: 4px; cursor: pointer; display: inline-block; min-width: 260px; }
+    .selectize-dropdown { border: 1px solid #999; max-height: 160px; overflow: auto; display: none; width: 320px; }
+    .option { padding: 4px; cursor: pointer; }
+    .option:hover { background: #eee; }
+    .item { display: inline-block; background: #e3f2fd; padding: 2px 6px; margin: 2px; }
+    .switchery { display: inline-block; width: 36px; height: 20px; border-radius: 10px; background: #ccc; cursor: pointer; }
+    .switchery.on { background: #1e88e5; }
+    .danger { border-color: red !important; }
+  </style>
+</head>
+<body>
+  <a href="" ng-click="onNovoPagamento()" id="novo-pagamento">Novo pagamento</a>
+  <a href="" ng-click="onNovaTransferencia()" id="nova-transferencia">Nova transferência</a>
+
+  <div class="uk-modal" id="modal-pagamento" style="display:none">
+    <main ng-controller="H02SF0201B">
+      <div skn-id="Components.FI030_VC_LANC">
+        <label>Descrição do pagamento</label>
+        <input class="md-input" ng-model="sknField" type="text" />
+      </div>
+      <div skn-id="Components.FI030_VL_LANC">
+        <label>Valor</label>
+        <input class="md-input" ng-model="sknField" type="text" />
+      </div>
+      <div skn-id="Components.FI030_DT_VENC">
+        <label>Vencimento</label>
+        <input class="md-input" ng-model="sknField" type="text" />
+      </div>
+
+      <div skn-id="Components.FI030_IT_PAGO">
+        <span>Pagar conta</span>
+        <input type="checkbox" style="display:none" />
+        <span class="switchery" onclick="togglePagar(this)"></span>
+      </div>
+      <div skn-id="Components.FI030_DT_PAGREC">
+        <label>Dt. pagamento</label>
+        <input class="md-input" ng-model="sknField" type="text" disabled />
+      </div>
+
+      <div skn-id="Components.FI030_NR_PESSOA">
+        <label>Fornecedor</label>
+        <div class="selectize-control">
+          <div class="selectize-input"><input type="text" /></div>
+          <div class="selectize-dropdown"><div class="selectize-dropdown-content"></div></div>
+        </div>
+      </div>
+      <div skn-id="Components.FI030_NR_CAT">
+        <label>Categoria</label>
+        <div class="selectize-control">
+          <div class="selectize-input"><input type="text" /></div>
+          <div class="selectize-dropdown"><div class="selectize-dropdown-content"></div></div>
+        </div>
+      </div>
+      <div skn-id="Components.FI030_NR_CONTA">
+        <label>Conta</label>
+        <div class="selectize-control">
+          <div class="selectize-input"><input type="text" /></div>
+          <div class="selectize-dropdown"><div class="selectize-dropdown-content"></div></div>
+        </div>
+      </div>
+      <div skn-id="Components.AD030_NR_CC">
+        <label>Centro de custo</label>
+        <div class="selectize-control">
+          <div class="selectize-input"><input type="text" /></div>
+          <div class="selectize-dropdown"><div class="selectize-dropdown-content"></div></div>
+        </div>
+      </div>
+      <div skn-id="Components.FI060_IT_TPDOC">
+        <label>Tipo de documento</label>
+        <div class="selectize-control">
+          <div class="selectize-input"><input type="text" /></div>
+          <div class="selectize-dropdown"><div class="selectize-dropdown-content"></div></div>
+        </div>
+      </div>
+
+      <a href="" onclick="event.preventDefault(); salvarPagamento()">Salvar</a>
+      <a href="" onclick="event.preventDefault(); fechar('modal-pagamento')">Cancelar</a>
+    </main>
+  </div>
+
+  <div class="uk-modal" id="modal-transferencia" style="display:none">
+    <main ng-controller="H02SF0201J">
+      <div skn-id="Components.FI030_VC_LANC">
+        <label>Descrição do pagamento</label>
+        <input class="md-input" ng-model="sknField" type="text" />
+      </div>
+      <div skn-id="Components.FI030_VL_LANC">
+        <label>Valor</label>
+        <input class="md-input" ng-model="sknField" type="text" />
+      </div>
+      <div skn-id="Components.FI030_DT_TRANSF">
+        <label>Data da transferência</label>
+        <input class="md-input" ng-model="sknField" type="text" />
+      </div>
+      <div skn-id="Components.FI030_NR_CONTAOR">
+        <label>Conta de origem</label>
+        <div class="selectize-control">
+          <div class="selectize-input"><input type="text" /></div>
+          <div class="selectize-dropdown"><div class="selectize-dropdown-content"></div></div>
+        </div>
+      </div>
+      <div skn-id="Components.FI030_NR_CONTADE">
+        <label>Conta de destino</label>
+        <div class="selectize-control">
+          <div class="selectize-input"><input type="text" /></div>
+          <div class="selectize-dropdown"><div class="selectize-dropdown-content"></div></div>
+        </div>
+      </div>
+      <a href="" onclick="event.preventDefault(); salvarTransferencia()">Salvar</a>
+      <a href="" onclick="event.preventDefault(); fechar('modal-transferencia')">Cancelar</a>
+    </main>
+  </div>
+
+  <script>
+    window.__lancamentos = [];
+
+    function abrir(id) {
+      document.getElementById(id).style.display = 'block';
+    }
+
+    function fechar(id) {
+      document.getElementById(id).style.display = 'none';
+    }
+
+    function makeSelectize(wrapper, options, selected) {
+      var control = wrapper.querySelector('.selectize-input');
+      var dropdown = wrapper.querySelector('.selectize-dropdown');
+      var content = wrapper.querySelector('.selectize-dropdown-content');
+
+      options.forEach(function (opt) {
+        var div = document.createElement('div');
+        div.className = 'option';
+        div.textContent = opt;
+        div.addEventListener('click', function () {
+          var old = control.querySelector('.item');
+          if (old) old.remove();
+          var item = document.createElement('div');
+          item.className = 'item';
+          item.textContent = opt;
+          control.appendChild(item);
+          dropdown.style.display = 'none';
+        });
+        content.appendChild(div);
+      });
+
+      if (selected) {
+        var item = document.createElement('div');
+        item.className = 'item';
+        item.textContent = selected;
+        control.appendChild(item);
+      }
+
+      control.addEventListener('click', function () {
+        dropdown.style.display = 'block';
+      });
+    }
+
+    function togglePagar(span) {
+      var modal = document.getElementById('modal-pagamento');
+      var check = modal.querySelector('[skn-id="Components.FI030_IT_PAGO"] input');
+      var dataPag = modal.querySelector('[skn-id="Components.FI030_DT_PAGREC"] input');
+      check.checked = !check.checked;
+      span.classList.toggle('on', check.checked);
+      dataPag.disabled = !check.checked;
+    }
+
+    function val(modal, id) {
+      return modal.querySelector('[skn-id="' + id + '"] input[ng-model="sknField"]').value;
+    }
+
+    function selectVal(modal, id) {
+      var item = modal.querySelector('[skn-id="' + id + '"] .selectize-input .item');
+      return item ? item.textContent : '';
+    }
+
+    function salvarPagamento() {
+      var modal = document.getElementById('modal-pagamento');
+      window.__lancamentos.push({
+        tipo: 'pagamento',
+        descricao: val(modal, 'Components.FI030_VC_LANC'),
+        valor: val(modal, 'Components.FI030_VL_LANC'),
+        vencimento: val(modal, 'Components.FI030_DT_VENC'),
+        pagou: modal.querySelector('[skn-id="Components.FI030_IT_PAGO"] input').checked,
+        pagamento: val(modal, 'Components.FI030_DT_PAGREC'),
+        categoria: selectVal(modal, 'Components.FI030_NR_CAT'),
+        conta: selectVal(modal, 'Components.FI030_NR_CONTA'),
+        centro: selectVal(modal, 'Components.AD030_NR_CC'),
+        tipo_doc: selectVal(modal, 'Components.FI060_IT_TPDOC')
+      });
+      fechar('modal-pagamento');
+    }
+
+    function salvarTransferencia() {
+      var modal = document.getElementById('modal-transferencia');
+      window.__lancamentos.push({
+        tipo: 'transferencia',
+        descricao: val(modal, 'Components.FI030_VC_LANC'),
+        valor: val(modal, 'Components.FI030_VL_LANC'),
+        data: val(modal, 'Components.FI030_DT_TRANSF'),
+        origem: selectVal(modal, 'Components.FI030_NR_CONTAOR'),
+        destino: selectVal(modal, 'Components.FI030_NR_CONTADE')
+      });
+      fechar('modal-transferencia');
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+      document.getElementById('novo-pagamento').addEventListener('click', function (e) {
+        e.preventDefault();
+        abrir('modal-pagamento');
+      });
+      document.getElementById('nova-transferencia').addEventListener('click', function (e) {
+        e.preventDefault();
+        abrir('modal-transferencia');
+      });
+
+      var pagamento = document.getElementById('modal-pagamento');
+      makeSelectize(pagamento.querySelector('[skn-id="Components.FI030_NR_PESSOA"]'),
+        ['1 : DIVERSOS', '2 : FORNECEDOR TESTE'], '');
+      makeSelectize(pagamento.querySelector('[skn-id="Components.FI030_NR_CAT"]'),
+        ['54 : 02.03.01 Fornecedores', '154 : 02.98.02 Equipamentos p/ Automacao'],
+        '54 : 02.03.01 Fornecedores');
+      makeSelectize(pagamento.querySelector('[skn-id="Components.FI030_NR_CONTA"]'),
+        ['1 : CAIXA ADM', '2 : CAIXA LOJA'], '1 : CAIXA ADM');
+      makeSelectize(pagamento.querySelector('[skn-id="Components.AD030_NR_CC"]'),
+        ['1 : LAGOA CAFE CONVENIENCIA'], '1 : LAGOA CAFE CONVENIENCIA');
+      makeSelectize(pagamento.querySelector('[skn-id="Components.FI060_IT_TPDOC"]'),
+        ['2 : DINHEIRO', '1 : CHEQUE'], '2 : DINHEIRO');
+
+      var transferencia = document.getElementById('modal-transferencia');
+      makeSelectize(transferencia.querySelector('[skn-id="Components.FI030_NR_CONTAOR"]'),
+        ['1 : CAIXA ADM', '2 : CAIXA LOJA'], '');
+      makeSelectize(transferencia.querySelector('[skn-id="Components.FI030_NR_CONTADE"]'),
+        ['1 : MOEDAS', '2 : BANCO'], '');
+    });
+  </script>
+</body>
+</html>
