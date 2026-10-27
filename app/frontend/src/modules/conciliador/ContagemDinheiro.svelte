@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+
   interface Props {
     readonly: boolean;
     contagens: any[];
@@ -42,6 +44,7 @@
       editado: false,
       notas: Object.fromEntries(denominations.map(d => [String(d), 0])),
       seriais_200: [] as string[],
+      nomes_200: [] as string[],
       moedas: "",
       depositos: "",
       total: 0,
@@ -119,6 +122,11 @@
     while (seriais.length < qty200) seriais.push("");
     while (seriais.length > qty200) seriais.pop();
     contagem.seriais_200 = seriais;
+
+    const nomes = Array.isArray(contagem.nomes_200) ? contagem.nomes_200 : [];
+    while (nomes.length < qty200) nomes.push("");
+    while (nomes.length > qty200) nomes.pop();
+    contagem.nomes_200 = nomes;
   }
 
   function refreshGeral() {
@@ -130,6 +138,7 @@
     let totalMoedas = 0;
     let totalDepositos = 0;
     const allSerials: string[] = [];
+    const allNomes: string[] = [];
 
     for (const c of contagens) {
       if (c === geral) continue;
@@ -138,7 +147,13 @@
       }
       totalMoedas += parseDecimal(c.moedas);
       totalDepositos += parseDecimal(c.depositos);
-      if (c.seriais_200) allSerials.push(...c.seriais_200.filter((s: string) => s));
+      const seriais = c.seriais_200 || [];
+      const nomes = c.nomes_200 || [];
+      for (let i = 0; i < seriais.length; i++) {
+        if (!seriais[i]) continue;
+        allSerials.push(seriais[i]);
+        allNomes.push(nomes[i] || "");
+      }
     }
 
     let grand = 0;
@@ -151,7 +166,42 @@
     geral.depositos = Math.round(totalDepositos * 100) / 100;
     geral.total = Math.round(grand * 100) / 100;
     geral.seriais_200 = allSerials;
+    geral.nomes_200 = allNomes;
   }
+
+  function atualizarGeralSeAutomatica() {
+    const geral = contagens[0];
+    if (!geral || geral.label !== "Geral" || geral.editado) return;
+    refreshGeral();
+    contagens = [...contagens];
+  }
+
+  function selectTab(idx: number) {
+    activeTab = idx;
+    atualizarGeralSeAutomatica();
+  }
+
+  onMount(atualizarGeralSeAutomatica);
+
+  // Recalcula a Geral automatica quando as contagens chegam do servidor ou
+  // quando serial/nome mudam. A assinatura evita loop de atualizacao.
+  let assinaturaGeral = "";
+  $effect(() => {
+    const geral = contagens[0];
+    if (!geral || geral.label !== "Geral" || geral.editado) return;
+    const assinatura = contagens
+      .slice(1)
+      .map((c: any) => [
+        c.notas?.["200"] || 0,
+        (c.seriais_200 || []).join(","),
+        (c.nomes_200 || []).join(","),
+      ].join(":"))
+      .join("|");
+    if (!assinatura || assinatura === assinaturaGeral) return;
+    assinaturaGeral = assinatura;
+    refreshGeral();
+    contagens = [...contagens];
+  });
 
   function addContagem() {
     const c = {
@@ -159,6 +209,7 @@
       label: nextLabel(),
       notas: Object.fromEntries(denominations.map(d => [String(d), 0])),
       seriais_200: [] as string[],
+      nomes_200: [] as string[],
       moedas: "",
       depositos: "",
       total: 0,
@@ -202,7 +253,7 @@
     <div class="flex flex-1 flex-wrap items-center gap-1 border-b">
       {#each contagens as contagem, idx}
         <button
-          onclick={() => (activeTab = idx)}
+          onclick={() => selectTab(idx)}
           class={tabClass(idx)}
         >
           {contagem.label}
@@ -325,30 +376,51 @@
         </tbody>
       </table>
 
-      <!-- Seriais R$ 200 -->
+      <!-- Seriais e nomes R$ 200 -->
       <div class="mt-2">
         <p class="mb-1 text-xs text-muted-foreground">
           {#if activeContagem.label !== "Geral" || activeContagem.editado}
-            Seriais das notas de R$ 200 ({activeContagem.seriais_200?.length || 0})
-            {serialRequired(activeContagem) ? "" : "(opcional)"}:
+            Seriais e nomes das notas de R$ 200 ({activeContagem.seriais_200?.length || 0})
+            {serialRequired(activeContagem) ? "" : "(serial opcional)"}:
           {:else}
-            Seriais somados de todas as contagens ({activeContagem.seriais_200?.length || 0}):
+            Seriais e nomes somados de todas as contagens ({activeContagem.seriais_200?.length || 0}):
           {/if}
         </p>
         {#if (activeContagem.seriais_200 || []).length > 0}
-          <div class="flex flex-wrap gap-1">
+          <div class="flex flex-wrap gap-2">
             {#each activeContagem.seriais_200 as serial, si}
               {#if activeContagem.label !== "Geral" || activeContagem.editado}
-                <input
-                  type="text"
-                  bind:value={activeContagem.seriais_200[si]}
-                  disabled={readonly}
-                  maxlength={5}
-                  placeholder="00000"
-                  class="w-16 border bg-background px-2 py-0.5 text-sm"
-                />
+                <div class="flex items-center gap-1">
+                  <input
+                    type="text"
+                    bind:value={activeContagem.seriais_200[si]}
+                    disabled={readonly}
+                    maxlength={5}
+                    placeholder="00000"
+                    title="Serial da nota de R$ 200"
+                    class="w-16 border bg-background px-2 py-0.5 text-sm"
+                  />
+                  <input
+                    type="text"
+                    value={activeContagem.nomes_200?.[si] || ""}
+                    oninput={(e) => {
+                      if (!Array.isArray(activeContagem.nomes_200)) {
+                        activeContagem.nomes_200 = [];
+                      }
+                      activeContagem.nomes_200[si] = (e.target as HTMLInputElement).value;
+                      contagens = [...contagens];
+                    }}
+                    disabled={readonly}
+                    maxlength={60}
+                    placeholder="Nome (opcional)"
+                    title="Nome/apelido da nota de R$ 200"
+                    class="w-44 border bg-background px-2 py-0.5 text-sm"
+                  />
+                </div>
               {:else}
-                <span class="bg-muted px-2 py-0.5 text-sm">{serial}</span>
+                <span class="bg-muted px-2 py-0.5 text-sm">
+                  {serial}{activeContagem.nomes_200?.[si] ? ` - ${activeContagem.nomes_200[si]}` : ""}
+                </span>
               {/if}
             {/each}
           </div>

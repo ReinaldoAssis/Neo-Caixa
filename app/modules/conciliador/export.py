@@ -25,6 +25,18 @@ def _date_br(iso_date: str) -> str:
         return iso_date
 
 
+def _formatar_seriais_200(seriais: list, nomes: list | None = None) -> str:
+    """Formata `serial - nome` preservando a ordem; nome vazio vira só serial."""
+    nomes = nomes or []
+    itens = []
+    for indice, serial in enumerate(seriais or []):
+        nome = ""
+        if indice < len(nomes):
+            nome = str(nomes[indice] or "").strip()
+        itens.append(f"{serial} - {nome}" if nome else str(serial))
+    return ", ".join(itens)
+
+
 def generate_conciliation_pdf_bytes(caixa: dict, posto_config: dict | None = None) -> bytes:
     try:
         from reportlab.lib import colors
@@ -228,9 +240,12 @@ def generate_conciliation_pdf_bytes(caixa: dict, posto_config: dict | None = Non
                 ]))
                 story.append(tbl)
                 serials = contagem.get("seriais_200") or []
+                nomes = contagem.get("nomes_200") or []
                 if serials:
                     story.append(Paragraph(
-                        "Seriais R$ 200: " + ", ".join(serials), styles["Normal"]
+                        "Seriais R$ 200: "
+                        + _formatar_seriais_200(serials, nomes),
+                        styles["Normal"],
                     ))
                 story.append(Spacer(1, 0.2 * cm))
 

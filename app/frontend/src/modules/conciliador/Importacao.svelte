@@ -214,6 +214,26 @@
   let statusPremmia = $state("");
   let statusRestPagbank = $state("");
   let premmiaLancamentos = $state<any[]>([]);
+  let premmiaSort = $state<Record<string, "asc" | "desc" | null>>({});
+
+  function togglePremmiaSort(key: string) {
+    const atual = premmiaSort[key] || null;
+    const proximo = atual === null ? "asc" : atual === "asc" ? "desc" : null;
+    premmiaSort = { ...premmiaSort, [key]: proximo };
+  }
+
+  function ordenarPremmia(key: string, itens: any[]): any[] {
+    const base = [...itens].sort((a: any, b: any) =>
+      String(a.data_hora || "").localeCompare(String(b.data_hora || "")),
+    );
+    const ordem = premmiaSort[key];
+    if (!ordem) return base;
+    base.sort((a: any, b: any) => {
+      const diff = Number(a.valor || 0) - Number(b.valor || 0);
+      return ordem === "asc" ? diff : -diff;
+    });
+    return base;
+  }
 
   let savedId = $state<string | null>(null);
   let hydrated = $state(false);
@@ -523,6 +543,7 @@
       const result = await uploadFile("/parser/premmia", file);
       statusPremmia = `Formato ${result.formato}. ${result.transacoes_processadas} transacoes`;
       premmiaLancamentos = result.lancamentos || [];
+      premmiaSort = {};
       for (const key of postoCategories) {
         const isSangria = key === "SANGRIA" || (postoLabels[key] || "").toUpperCase() === "SANGRIA";
         if (!isSangria && result.categorias?.[key]?.site) {
@@ -603,6 +624,7 @@
       editado: false,
       notas: { "200": 0, "100": 0, "50": 0, "20": 0, "10": 0, "5": 0, "2": 0 },
       seriais_200: [] as string[],
+      nomes_200: [] as string[],
       moedas: 0,
       depositos: 0,
       total: 0,
@@ -2056,7 +2078,7 @@
           </label>
           <button
             disabled={readonly}
-            onclick={() => { statusPremmia = "Nenhum arquivo importado"; premmiaLancamentos = []; for (const k of postoCategories) { const isSangria = k === "SANGRIA" || (postoLabels[k] || "").toUpperCase() === "SANGRIA"; if (!isSangria) categorias[k].site = 0; } }}
+            onclick={() => { statusPremmia = "Nenhum arquivo importado"; premmiaLancamentos = []; premmiaSort = {}; for (const k of postoCategories) { const isSangria = k === "SANGRIA" || (postoLabels[k] || "").toUpperCase() === "SANGRIA"; if (!isSangria) categorias[k].site = 0; } }}
             class="inline-flex h-8 items-center border px-3 text-sm hover:bg-accent"
           >
             Remover
@@ -2066,9 +2088,10 @@
         {#if premmiaLancamentos.length > 0}
           {@const premmiaKeys = ["PREMMIA_CARTAO", "PREMMIA_PIX", "PREMMIA_VALE", "PREMMIA_CUPOM"]}
           {@const grouped = premmiaKeys.reduce((acc: Record<string, any[]>, k: string) => {
-            acc[k] = premmiaLancamentos
-              .filter((l: any) => l.categoria === k && l.aceito)
-              .sort((a: any, b: any) => (a.data_hora || "").localeCompare(b.data_hora || ""));
+            acc[k] = ordenarPremmia(
+              k,
+              premmiaLancamentos.filter((l: any) => l.categoria === k && l.aceito),
+            );
             return acc;
           }, {} as Record<string, any[]>)}
           {@const maxRows = Math.max(...premmiaKeys.map(k => grouped[k].length), 0)}
@@ -2077,7 +2100,19 @@
               <thead class="sticky top-0 bg-muted">
                 <tr class="text-left">
                   {#each premmiaKeys as key}
-                    <th class="px-2 py-1.5">{postoLabels[key] || key}</th>
+                    <th class="px-2 py-1.5">
+                      <button
+                        type="button"
+                        onclick={() => togglePremmiaSort(key)}
+                        class="inline-flex items-center gap-1 hover:text-primary"
+                        title="Ordenar por valor: data -> crescente -> decrescente -> data"
+                      >
+                        <span>{postoLabels[key] || key}</span>
+                        <span class="text-[10px]">
+                          {#if premmiaSort[key] === "asc"}▲{:else if premmiaSort[key] === "desc"}▼{:else}↕{/if}
+                        </span>
+                      </button>
+                    </th>
                   {/each}
                 </tr>
               </thead>
@@ -2086,7 +2121,12 @@
                   <tr class="border-t">
                     {#each premmiaKeys as key}
                       {@const item = grouped[key][rowIdx]}
-                      <td class="px-2 py-1 text-right tabular-nums">
+                      <td
+                        class="px-2 py-1 text-right tabular-nums"
+                        title={item
+                          ? `${item.data_hora || ""}${item.nome ? ` - ${item.nome}` : ""}`
+                          : ""}
+                      >
                         {#if item}
                           {formatMoney(item.valor)}
                         {:else}

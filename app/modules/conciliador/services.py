@@ -202,12 +202,15 @@ def compute_contagem_total(contagem: dict) -> float:
 def consolidate_contagens(contagens: list[dict]) -> dict:
     geral = next((c for c in contagens if c.get("label") == "Geral"), None)
     if geral and geral.get("editado"):
-        return dict(geral)
+        resultado = dict(geral)
+        resultado.setdefault("nomes_200", [])
+        return resultado
 
     total_notes: dict[str, int] = {str(d): 0 for d in DENOMINATIONS}
     total_moedas = 0.0
     total_depositos = 0.0
     all_serials: list[str] = []
+    all_nomes: list[str] = []
 
     for c in contagens:
         notas = c.get("notas", {})
@@ -215,7 +218,13 @@ def consolidate_contagens(contagens: list[dict]) -> dict:
             total_notes[str(d)] += int(notas.get(str(d), 0) or 0)
         total_moedas += parse_money(c.get("moedas", 0))
         total_depositos += parse_money(c.get("depositos", 0))
-        all_serials.extend(c.get("seriais_200", []))
+        serials = c.get("seriais_200", []) or []
+        nomes = c.get("nomes_200", []) or []
+        all_serials.extend(serials)
+        all_nomes.extend(
+            str(nomes[i]) if i < len(nomes) else ""
+            for i in range(len(serials))
+        )
 
     grand = sum(total_notes[str(d)] * d for d in DENOMINATIONS) + total_moedas + total_depositos
 
@@ -226,6 +235,7 @@ def consolidate_contagens(contagens: list[dict]) -> dict:
             "criado_em": geral.get("criado_em"),
             "notas": total_notes,
             "seriais_200": all_serials,
+            "nomes_200": all_nomes,
             "moedas": round(total_moedas, 2),
             "depositos": round(total_depositos, 2),
             "total": round(grand, 2),
@@ -235,6 +245,7 @@ def consolidate_contagens(contagens: list[dict]) -> dict:
         "label": "Geral",
         "notas": total_notes,
         "seriais_200": all_serials,
+        "nomes_200": all_nomes,
         "moedas": round(total_moedas, 2),
         "depositos": round(total_depositos, 2),
         "total": round(grand, 2),
