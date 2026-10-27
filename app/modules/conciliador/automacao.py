@@ -1269,12 +1269,18 @@ async def _toggle_pagar_conta(modal) -> None:
         except Exception:
             marcado = False
     if not marcado:
-        await wrapper.locator("span.switchery").first.click()
+        await _clicar_js(wrapper.locator("span.switchery").first)
 
     campo = modal.locator(
         f'[skn-id="{SKN_DT_PAGAMENTO}"] input[ng-model="sknField"]'
     ).first
     await expect(campo).to_be_enabled(timeout=TIMEOUT_CURTO_MS)
+
+
+async def _clicar_js(locator) -> None:
+    """Clica via DOM. O Cloudfy cobre botoes com header/iframe de chat."""
+    await locator.wait_for(state="attached", timeout=TIMEOUT_CURTO_MS)
+    await locator.evaluate("(el) => el.click()")
 
 
 async def _hover_novo(page):
@@ -1313,7 +1319,7 @@ async def _abrir_menu_novo(page, ng_click: str):
 
     # Fallback: em algumas versões o clique no 'Novo' também abre o menu.
     try:
-        await botao.click()
+        await _clicar_js(botao)
         await botao.hover()
     except Exception:
         pass
@@ -1326,12 +1332,17 @@ async def _abrir_menu_novo(page, ng_click: str):
     )
 
 
+async def _clicar_opcao_novo(page, ng_click: str) -> None:
+    """Clica via DOM: o menu perde hover/é coberto pelo header durante o clique."""
+    alvo = page.locator(f'a[ng-click="{ng_click}"]').first
+    await _clicar_js(alvo)
+
+
 async def _abrir_modal_financeiro(page, ng_click: str, controller: str):
     alvo = page.locator(f'a[ng-click="{ng_click}"]:visible').first
     if await alvo.count() == 0:
         await _abrir_menu_novo(page, ng_click)
-    await alvo.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
-    await alvo.click()
+    await _clicar_opcao_novo(page, ng_click)
 
     modal = page.locator(f'main[ng-controller="{controller}"]:visible').last
     await modal.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
@@ -1362,7 +1373,7 @@ async def _salvar_modal_financeiro(page, modal, dialogos: list[str]) -> None:
     from playwright.async_api import expect
 
     botao = modal.locator('a:has-text("Salvar")').last
-    await botao.click()
+    await _clicar_js(botao)
 
     try:
         await expect(modal).to_be_hidden(timeout=TIMEOUT_PADRAO_MS)
@@ -1379,7 +1390,7 @@ async def _salvar_modal_financeiro(page, modal, dialogos: list[str]) -> None:
 
     # Fecha o modal com erro para o próximo item não reutilizar o formulário.
     try:
-        await modal.locator('a:has-text("Cancelar")').last.click()
+        await _clicar_js(modal.locator('a:has-text("Cancelar")').last)
         await expect(modal).to_be_hidden(timeout=TIMEOUT_CURTO_MS)
     except Exception:
         try:
@@ -1392,18 +1403,24 @@ async def _salvar_modal_financeiro(page, modal, dialogos: list[str]) -> None:
 
 async def abrir_financeiro(page, usuario: str, senha: str) -> None:
     inicio = time.perf_counter()
+    # Sempre parte do login: goto direto no financeiro sem sessão cai no
+    # /login/ e o POST de autenticação pode ser abortado pelo goto seguinte.
+    await login(page, usuario, senha)
     await page.goto(FINANCEIRO_URL, wait_until="domcontentloaded")
-    if _url_login(page.url) or await tem_form_login(page):
-        await login(page, usuario, senha)
-        await page.goto(FINANCEIRO_URL, wait_until="domcontentloaded")
-
     try:
         await page.wait_for_function(JS_FINANCEIRO_PRONTO, timeout=TIMEOUT_PADRAO_MS)
-    except Exception as exc:
-        raise RuntimeError(
-            "Gerenciador financeiro do Cloudfy nao carregou "
-            "(botao 'Novo' ausente)."
-        ) from exc
+    except Exception:
+        await login(page, usuario, senha)
+        await page.goto(FINANCEIRO_URL, wait_until="domcontentloaded")
+        try:
+            await page.wait_for_function(
+                JS_FINANCEIRO_PRONTO, timeout=TIMEOUT_PADRAO_MS
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Gerenciador financeiro do Cloudfy nao carregou "
+                "(botao 'Novo' ausente)."
+            ) from exc
 
     await _hover_novo(page)
     faltando: list[str] = []

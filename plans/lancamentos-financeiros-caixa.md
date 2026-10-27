@@ -270,3 +270,22 @@ Automação: `_hover_novo`, `_opcao_novo_visivel`, `_abrir_menu_novo` e
 Verificação: `pytest -q` **68 passed**; `npm run build` OK; `svelte-check` mantém
 os 4 erros antigos; `scripts/smoke_financeiro.py` cobre menu oculto até hover e
 categoria 115 por item.
+
+## Correção 2026-10-27 — clique DOM + login real
+
+Smoke real (somente abrir modais, sem Salvar) mostrou:
+
+- O menu Novo abre no hover, mas `locator.click()` no `<a>` falha: o elemento
+  fica instável e o header (`uk-float-left`) ou um iframe de chat ("Message from
+  company") intercepta o clique. Solução: `_clicar_js` faz `el.click()` via DOM.
+- O mesmo iframe cobre o botão Cancelar; Salvar/Cancelar também usam `_clicar_js`.
+- `abrir_financeiro` agora chama `login()` antes do goto; o goto direto sem
+  sessão caía em `/login/` e podia abortar o POST de autenticação.
+- Selectize de categoria do Cloudfy é remoto: não há opções antes de digitar.
+  Digitar a descrição carrega a lista; `115` e `78` foram selecionados com
+  sucesso em modais novos. Contas `CAIXA ADM` (1) e `MOEDAS` (4) OK.
+- Validado em produção: login, `#/H02SF0201E`, menu Novo, modal Conta a pagar,
+  modal Transferência entre contas, abertura e fechamento. Nenhum Salvar
+  clicado; nenhum lançamento criado.
+
+Pendente: validar o Salvar real e o efeito no próximo item (recarregar página).

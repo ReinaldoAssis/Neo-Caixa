@@ -19,6 +19,8 @@
     .md-btn { padding: 8px 12px; border: 1px solid #999; background: #eee; cursor: pointer; }
     .menu-wrap { position: relative; display: inline-block; }
     .menu-novo { display: none; position: absolute; left: 0; top: 100%; z-index: 5; background: #fff; border: 1px solid #999; padding: 8px; }
+    .menu-novo a { display: block; padding: 4px 8px; }
+    .menu-bloqueio { position: absolute; inset: 0; z-index: 2; }
     .menu-wrap:hover .menu-novo { display: block; }
     .menu-novo a { display: block; padding: 4px 8px; }
   </style>
@@ -27,6 +29,7 @@
   <div class="menu-wrap">
     <button class="md-btn ng-binding">Novo<i class="material-icons"></i></button>
     <div class="menu-novo">
+      <div class="menu-bloqueio"></div>
       <a href="" ng-click="onNovoPagamento()" id="novo-pagamento">Novo pagamento</a>
       <a href="" ng-click="onNovaTransferencia()" id="nova-transferencia">Nova transferência</a>
     </div>
