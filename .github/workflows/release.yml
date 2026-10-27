@@ -5,13 +5,20 @@ on:
     branches:
       - "**"
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Tag to build/release (e.g. v0.1.1)"
-        required: true
 
 permissions:
   contents: write
+
+# Uma execucao por branch por vez; um push novo cancela o build anterior para
+# nao publicar releases fora de ordem (o /releases/latest ficaria errado).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+# 1.0.<run_number> e unico e crescente. O auto-update compara com a versao
+# gravada em app/version.py, que o CI sobrescreve antes do PyInstaller.
+env:
+  VERSION: 1.0.${{ github.run_number }}
 
 jobs:
   build:
@@ -39,6 +46,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+
+      - name: Set build version
+        run: python scripts/set_version.py
+
+      - name: Show version
+        run: python -c "import app.version; print(app.version.__version__)"
 
       - name: Install Python dependencies
         run: |
@@ -83,7 +96,6 @@ jobs:
   release:
     name: Create Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
@@ -94,20 +106,26 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f
 
-      - name: Resolve tag
+      - name: Resolve release tag
         id: tag
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "value=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          TAG="v${VERSION}"
+          if [ "${GITHUB_RUN_ATTEMPT}" != "1" ]; then
+            TAG="${TAG}-r${GITHUB_RUN_ATTEMPT}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF}" = "refs/heads/master" ]; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
           else
-            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.value }}
-          name: Neo Caixa ${{ steps.tag.outputs.value }}
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Neo Caixa v${{ env.VERSION }}${{ github.ref != 'refs/heads/master' && ' (pre-release)' || '' }}
+          prerelease: ${{ steps.tag.outputs.prerelease }}
           generate_release_notes: true
           files: |
             artifacts/NeoCaixa-macos/NeoCaixa-macos.zip

@@ -295,3 +295,13 @@ Evidências:
 - Corrigido: `{:else}` (aba Grupos) → `{:else if activeTab === "grupos"}`.
 - Validado com Svelte 5.57.3: `npm run build` OK; abas Geral/Grupos/Equivalencias
   renderizam; smoke completo do restaurante repetido com a mesma versão do CI.
+
+## 13. Release automática por push (CI)
+
+- `.github/workflows/release.yml`: todo push (qualquer branch) gera release.
+- `master` → release normal (entra em `/releases/latest` e no auto-update).
+- Outras branches → **pre-release** (não entra no auto-update).
+- Versão: `1.0.<github.run_number>`, injetada por `scripts/set_version.py`
+  antes do PyInstaller; tag `v<versao>` (re-run: `-r<attempt>`).
+- `concurrency` por ref com `cancel-in-progress` evita releases fora de ordem.
+- `workflow_dispatch` não recebe mais tag manual.
