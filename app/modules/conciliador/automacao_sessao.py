@@ -399,13 +399,33 @@ class AutomacaoSession:
         async def op():
             await self._ensure_ready(login, senha, debug)
             await self._goto_conciliador()
-            caixas = await ops.ler_caixas(self._page)
-            resolvidos, erros = ops.resolver_caixas(caixas, chaves, data_iso)
-            resultados: list[dict] = list(erros)
 
-            for posicao, (caixa, chave) in enumerate(resolvidos):
+            resultados: list[dict] = []
+            for indice, chave in enumerate(chaves):
+                caixa = None
                 inicio = time.perf_counter()
                 try:
+                    # O detalhe/conciliação abre inline; garante a lista antes
+                    # de procurar o próximo caixa (evita reusar o detalhe do T1).
+                    try:
+                        await ops.garantir_lista(self._page)
+                    except Exception:
+                        await self._goto_conciliador()
+
+                    caixas = await ops.ler_caixas(self._page)
+                    resolvidos, erros = ops.resolver_caixas(
+                        caixas, [chave], data_iso
+                    )
+                    if erros or not resolvidos:
+                        resultados.append(erros[0] if erros else {
+                            "chave": chave,
+                            "ok": False,
+                            "erro": "Caixa nao encontrado na lista atual.",
+                            "tempo_ms": 0,
+                        })
+                        continue
+
+                    caixa = resolvidos[0][0]
                     detalhe = await self._com_retry(
                         ops.abrir_detalhes, self._page, self._context, caixa
                     )
@@ -420,8 +440,8 @@ class AutomacaoSession:
                 except Exception as exc:
                     logger.warning(
                         "[automacao] falha ao importar caixa %s/%s: %s",
-                        caixa.data,
-                        caixa.turno,
+                        getattr(caixa, "data", "?"),
+                        getattr(caixa, "turno", "?"),
                         exc,
                     )
                     resultados.append({
@@ -431,7 +451,7 @@ class AutomacaoSession:
                         "tempo_ms": int(round((time.perf_counter() - inicio) * 1000)),
                     })
                     if self._sessao_perdida(exc):
-                        for resto_caixa, resto_chave in resolvidos[posicao + 1:]:
+                        for resto_chave in chaves[indice + 1:]:
                             resultados.append({
                                 "chave": resto_chave,
                                 "ok": False,
@@ -442,6 +462,13 @@ class AutomacaoSession:
                                 "tempo_ms": 0,
                             })
                         break
+                    try:
+                        await ops.garantir_lista(self._page)
+                    except Exception:
+                        try:
+                            await self._goto_conciliador()
+                        except Exception:
+                            pass
 
             return {"resultados": resultados, "total": len(resultados)}
 

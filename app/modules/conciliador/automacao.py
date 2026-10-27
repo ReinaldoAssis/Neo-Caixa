@@ -10,6 +10,7 @@ As funções públicas continuam síncronas e delegam para a sessão singleton.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import tempfile
@@ -32,7 +33,6 @@ FORMA_VENDA_A_PRAZO = "venda a prazo"
 
 TIMEOUT_PADRAO_MS = 15000
 TIMEOUT_CURTO_MS = 8000
-TIMEOUT_POPUP_MS = 10000
 TIMEOUT_SELECT_MS = 2500
 
 
@@ -385,6 +385,7 @@ def zerar_tempos() -> None:
 
 JS_LISTAR = """
 () => Array.from(document.querySelectorAll('tr[ng-repeat*="sknDataProviderFiltered"]'))
+    .filter(row => !!(row.offsetWidth || row.offsetHeight || row.getClientRects().length))
     .map((row, i) => ({
         i,
         cells: Array.from(row.querySelectorAll('td[ng-repeat*="Column in ::Columns"]'))
@@ -395,6 +396,7 @@ JS_LISTAR = """
 
 JS_PAGAMENTOS = """
 () => Array.from(document.querySelectorAll('tr[ng-repeat*="RS_PAGAMENTOS"]'))
+    .filter(row => !!(row.offsetWidth || row.offsetHeight || row.getClientRects().length))
     .map(row => Array.from(row.querySelectorAll('td')).map(td => {
         const inp = td.querySelector(
             'input[ng-model*="CC078_VL_VNDPOS"], '
@@ -407,6 +409,7 @@ JS_PAGAMENTOS = """
 
 JS_DINHEIRO = """
 () => Array.from(document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]'))
+    .filter(row => !!(row.offsetWidth || row.offsetHeight || row.getClientRects().length))
     .map(row => {
         const td = row.querySelector('td');
         const span = row.querySelector('span[ng-bind*="CC077_VL_CALC"]');
@@ -444,7 +447,8 @@ JS_LOGIN_OK = "() => !document.querySelector('#inputPassword')"
 
 JS_CONCILIADOR_LINHAS = """
 () => {
-    const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="sknDataProviderFiltered"]'));
+    const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="sknDataProviderFiltered"]'))
+        .filter(row => !!(row.offsetWidth || row.offsetHeight || row.getClientRects().length));
     if (!rows.length) return false;
     return rows.every(row => {
         const cells = row.querySelectorAll('td[ng-repeat*="Column in ::Columns"]');
@@ -456,7 +460,8 @@ JS_CONCILIADOR_LINHAS = """
 
 JS_DETALHE_PRONTO = """
 () => {
-    const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]'));
+    const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]'))
+        .filter(row => !!(row.offsetWidth || row.offsetHeight || row.getClientRects().length));
     if (!rows.length) return false;
     return rows.every(row => (row.textContent || '').trim().length > 0);
 }
@@ -464,20 +469,66 @@ JS_DETALHE_PRONTO = """
 
 JS_DINHEIRO_PRONTO = """
 () => {
-    const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]'));
+    const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]'))
+        .filter(row => !!(row.offsetWidth || row.offsetHeight || row.getClientRects().length));
     return rows.length > 0 && rows.every(row => (row.textContent || '').trim().length > 0);
 }
 """
 
-JS_CONTAR_FORMAS = """() => document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]').length"""
+JS_CONTAR_FORMAS = """
+() => Array.from(document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]'))
+    .filter(row => !!(row.offsetWidth || row.offsetHeight || row.getClientRects().length)).length
+"""
 
-JS_CONTAR_PAGAMENTOS = """() => document.querySelectorAll('tr[ng-repeat*="RS_PAGAMENTOS"]').length"""
+JS_CONTAR_PAGAMENTOS = """
+() => Array.from(document.querySelectorAll('tr[ng-repeat*="RS_PAGAMENTOS"]'))
+    .filter(row => !!(row.offsetWidth || row.offsetHeight || row.getClientRects().length)).length
+"""
 
 JS_CONCILIACAO_PRONTA = """
 () => {
-    const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="RS_PAGAMENTOS"]'));
+    const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="RS_PAGAMENTOS"]'))
+        .filter(row => !!(row.offsetWidth || row.offsetHeight || row.getClientRects().length));
     if (!rows.length) return false;
     return rows.every(row => row.querySelectorAll('td').length >= 8);
+}
+"""
+
+JS_LISTA_PRONTA = """
+() => {
+    const vis = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="sknDataProviderFiltered"]')).some(vis);
+    if (rows) return true;
+    const detalhe = Array.from(document.querySelectorAll('a')).filter(vis)
+        .some(a => (a.textContent || '').toUpperCase().includes('CONCILIAR CART'));
+    const conc = Array.from(document.querySelectorAll('a')).filter(vis)
+        .some(a => (a.textContent || '').trim().toUpperCase() === 'CONFIRMAR');
+    if (detalhe || conc) return false;
+    return Array.from(document.querySelectorAll('a, button')).filter(vis)
+        .some(el => ['BUSCAR', 'MOSTRAR TODOS'].includes((el.textContent || '').trim().toUpperCase()));
+}
+"""
+
+JS_DETALHE_ABERTO = """
+() => Array.from(document.querySelectorAll('a'))
+    .filter(a => !!(a.offsetWidth || a.offsetHeight || a.getClientRects().length))
+    .some(a => (a.textContent || '').toUpperCase().includes('CONCILIAR CART'))
+"""
+
+JS_CONCILIACAO_ABERTA = """
+() => Array.from(document.querySelectorAll('a'))
+    .filter(a => !!(a.offsetWidth || a.offsetHeight || a.getClientRects().length))
+    .some(a => (a.textContent || '').trim().toUpperCase() === 'CONFIRMAR')
+"""
+
+JS_DETALHE_OU_LISTA = """
+() => {
+    const vis = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    const lista = Array.from(document.querySelectorAll('tr[ng-repeat*="sknDataProviderFiltered"]')).some(vis);
+    const detalhe = Array.from(document.querySelectorAll('a'))
+        .filter(vis)
+        .some(a => (a.textContent || '').toUpperCase().includes('CONCILIAR CART'));
+    return lista || detalhe;
 }
 """
 
@@ -595,6 +646,14 @@ async def navegar_conciliador(page, usuario: str, senha: str) -> None:
     except Exception:
         pass
 
+    # Se o goto caiu numa tela inline já aberta (mesma URL), volta antes de
+    # esperar a lista para não gastar o timeout inteiro.
+    if await _conciliacao_aberta(page) or await _detalhe_aberto(page):
+        try:
+            await garantir_lista(page)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[automacao] nao consegui voltar para a lista: %s", exc)
+
     try:
         await esperar(page, JS_CONCILIADOR_LINHAS, TIMEOUT_CURTO_MS, "conciliador.linhas")
     except TimeoutError:
@@ -613,6 +672,11 @@ async def navegar_conciliador(page, usuario: str, senha: str) -> None:
         else:
             logger.info("[automacao] conciliador sem linhas visiveis (lista vazia?)")
 
+    try:
+        await garantir_lista(page)
+    except Exception as exc:  # noqa: BLE001 - estado sera validado no uso
+        logger.warning("[automacao] nao consegui garantir a lista: %s", exc)
+
     _marcar("conciliador", inicio)
 
 
@@ -624,20 +688,131 @@ async def ler_caixas(page) -> list[CaixaResumo]:
     return caixas
 
 
-async def _abrir_popup(page, context, acao):
-    """Executa a ação e espera o popup; se não abrir, segue na mesma página."""
-    from playwright.async_api import TimeoutError as PWTimeoutError
-
+async def _lista_visivel(page) -> bool:
     try:
-        async with context.expect_page(timeout=TIMEOUT_POPUP_MS) as info:
-            await acao()
-        nova = await info.value
-    except PWTimeoutError:
-        logger.info("[automacao] popup nao abriu; seguindo na pagina atual")
-        return page
+        return bool(await page.evaluate(JS_LISTA_PRONTA))
+    except Exception:
+        return False
 
-    await nova.wait_for_load_state("domcontentloaded")
-    return nova
+
+async def _detalhe_aberto(page) -> bool:
+    try:
+        return bool(await page.evaluate(JS_DETALHE_ABERTO))
+    except Exception:
+        return False
+
+
+async def _conciliacao_aberta(page) -> bool:
+    try:
+        return bool(await page.evaluate(JS_CONCILIACAO_ABERTA))
+    except Exception:
+        return False
+
+
+async def _clicar_voltar_visivel(page) -> bool:
+    botoes = page.locator('a:has-text("Voltar")')
+    total = await botoes.count()
+    for i in range(total):
+        botao = botoes.nth(i)
+        try:
+            if await botao.is_visible():
+                await botao.click()
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def _voltar_para_lista(page) -> None:
+    """Volta da conciliação/detalhe para a lista do conciliador.
+
+    O Cloudfy atual abre detalhe e conciliação inline na mesma aba. O caminho
+    de volta é ``Voltar`` (conciliação -> detalhe) e ``Voltar`` (detalhe ->
+    lista). Se a tela não responder, recarrega a lista.
+    """
+    for _ in range(3):
+        if await _lista_visivel(page):
+            return
+        if not (await _conciliacao_aberta(page) or await _detalhe_aberto(page)):
+            break
+        if not await _clicar_voltar_visivel(page):
+            break
+        try:
+            await page.wait_for_function(JS_DETALHE_OU_LISTA, timeout=TIMEOUT_CURTO_MS)
+        except Exception:
+            pass
+
+    if await _lista_visivel(page):
+        return
+
+    logger.info("[automacao] voltando para a lista via reload")
+    await page.reload(wait_until="domcontentloaded")
+    try:
+        await page.evaluate(JS_MOSTRAR_TODOS)
+    except Exception:
+        pass
+    await page.wait_for_function(JS_LISTA_PRONTA, timeout=TIMEOUT_PADRAO_MS)
+
+
+async def garantir_lista(page) -> None:
+    """Garante a lista do conciliador visível (recupera de detalhe/conciliação)."""
+    if await _lista_visivel(page):
+        return
+    if await _conciliacao_aberta(page) or await _detalhe_aberto(page):
+        await _voltar_para_lista(page)
+        return
+    # Pode ser só o primeiro render da lista: dá uma janela curta antes de
+    # assumir que é preciso voltar/recarregar.
+    try:
+        await page.wait_for_function(JS_LISTA_PRONTA, timeout=1500)
+        return
+    except Exception:
+        pass
+    await _voltar_para_lista(page)
+
+
+async def _abrir_pagina_ou_inline(
+    page,
+    context,
+    acao,
+    ready_js: str,
+    timeout_ms: int,
+    etapa: str,
+):
+    """Executa a ação e espera uma nova aba OU o conteúdo inline na aba atual.
+
+    Devolve ``(pagina, inline)``. O Cloudfy atual usa navegação inline; algumas
+    telas/versões ainda abrem popup, então os dois casos são aceitos. O poll
+    tolera navegação/reload no meio da espera (contexto de execução destruído).
+    """
+    timeout_s = max(0.5, timeout_ms / 1000)
+    popup_task = asyncio.create_task(context.wait_for_event("page"))
+    try:
+        await acao()
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if popup_task.done():
+                try:
+                    nova = popup_task.result()
+                    if nova is not None and not nova.is_closed():
+                        await nova.wait_for_load_state("domcontentloaded")
+                        logger.info("[automacao] %s abriu em nova aba", etapa)
+                        return nova, False
+                except Exception:
+                    pass
+            try:
+                if await page.evaluate(ready_js):
+                    logger.info("[automacao] %s abriu inline", etapa)
+                    return page, True
+            except Exception:
+                # navegação/reload no meio da espera: tenta de novo
+                pass
+            await asyncio.sleep(0.1)
+        raise TimeoutError(f"Timeout esperando {etapa}.")
+    finally:
+        if not popup_task.done():
+            popup_task.cancel()
+        await asyncio.gather(popup_task, return_exceptions=True)
 
 
 async def extrair_dinheiro(page) -> str:
@@ -650,15 +825,27 @@ async def extrair_dinheiro(page) -> str:
 
 
 async def extrair_pagamentos(page, context) -> list[PagamentoCartao]:
-    btn = page.locator('a:has-text("Conciliar cart")')
+    btn = page.locator('a:has-text("Conciliar cart"):visible')
     if await btn.count() == 0:
         logger.warning("[automacao] botao 'Conciliar cartoes' nao encontrado")
         return []
 
-    conciliacao = await _abrir_popup(page, context, btn.first.click)
+    conciliacao, _inline = await _abrir_pagina_ou_inline(
+        page,
+        context,
+        btn.first.click,
+        JS_CONCILIACAO_ABERTA,
+        TIMEOUT_CURTO_MS,
+        "conciliacao",
+    )
     try:
         try:
-            await esperar(conciliacao, JS_CONCILIACAO_PRONTA, TIMEOUT_CURTO_MS, "conciliacao.pronta")
+            await esperar(
+                conciliacao,
+                JS_CONCILIACAO_PRONTA,
+                TIMEOUT_CURTO_MS,
+                "conciliacao.pronta",
+            )
         except TimeoutError:
             if not await conciliacao.evaluate(JS_CONTAR_PAGAMENTOS):
                 logger.info("[automacao] conciliacao sem pagamentos de cartao")
@@ -673,12 +860,24 @@ async def extrair_pagamentos(page, context) -> list[PagamentoCartao]:
 
 async def abrir_detalhes(page, context, caixa: CaixaResumo) -> CaixaDetalhe:
     inicio = time.perf_counter()
-    row = page.locator('tr[ng-repeat*="sknDataProviderFiltered"]').nth(caixa.row_index)
+    await garantir_lista(page)
+    row = page.locator('tr[ng-repeat*="sknDataProviderFiltered"]:visible').nth(
+        caixa.row_index
+    )
     botao = row.locator("td .material-icons").last
-    detalhe = await _abrir_popup(page, context, botao.click)
+    detalhe, _inline = await _abrir_pagina_ou_inline(
+        page,
+        context,
+        botao.click,
+        JS_DETALHE_ABERTO,
+        TIMEOUT_CURTO_MS,
+        "detalhe",
+    )
     try:
         try:
-            await esperar(detalhe, JS_DETALHE_PRONTO, TIMEOUT_CURTO_MS, "detalhe.pronto")
+            await esperar(
+                detalhe, JS_DETALHE_PRONTO, TIMEOUT_CURTO_MS, "detalhe.pronto"
+            )
         except TimeoutError:
             if not await detalhe.evaluate(JS_CONTAR_FORMAS):
                 raise RuntimeError(
@@ -691,8 +890,16 @@ async def abrir_detalhes(page, context, caixa: CaixaResumo) -> CaixaDetalhe:
         _marcar("extrair.detalhe", inicio)
         return CaixaDetalhe(resumo=caixa, dinheiro=dinheiro, pagamentos=pagamentos)
     finally:
-        if detalhe is not page:
-            await detalhe.close()
+        if detalhe is page:
+            try:
+                await _voltar_para_lista(page)
+            except Exception as exc:  # noqa: BLE001 - próximo caixa tenta de novo
+                logger.warning("[automacao] falha ao voltar para a lista: %s", exc)
+        else:
+            try:
+                await detalhe.close()
+            except Exception:
+                pass
 
 
 async def _lancar_dinheiro(page, valor: str) -> bool:
@@ -707,7 +914,9 @@ async def _lancar_dinheiro(page, valor: str) -> bool:
 
     idx = await page.evaluate("""
         () => {
-            const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]'));
+            const vis = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+            const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]'))
+                .filter(vis);
             return rows.findIndex(row => {
                 const td = row.querySelector('td');
                 return td && td.textContent.trim().toUpperCase() === 'DINHEIRO';
@@ -717,7 +926,7 @@ async def _lancar_dinheiro(page, valor: str) -> bool:
     if not isinstance(idx, int) or idx < 0:
         raise RuntimeError("Linha DINHEIRO nao encontrada; nada foi lancado.")
 
-    inp = page.locator('tr[ng-repeat*="RS_FORMASPAGTO"]').nth(idx).locator(
+    inp = page.locator('tr[ng-repeat*="RS_FORMASPAGTO"]:visible').nth(idx).locator(
         'input[ng-model*="CC077_VL_CONCI"]'
     )
     if await inp.count() == 0:
@@ -729,13 +938,22 @@ async def _lancar_dinheiro(page, valor: str) -> bool:
 
 
 async def _abrir_conciliacao(page, context):
-    btn = page.locator('a:has-text("Conciliar cart")')
+    btn = page.locator('a:has-text("Conciliar cart"):visible')
     if await btn.count() == 0:
         logger.warning("[automacao] botao 'Conciliar cartoes' nao encontrado")
         return None
-    conciliacao = await _abrir_popup(page, context, btn.first.click)
+    conciliacao, _inline = await _abrir_pagina_ou_inline(
+        page,
+        context,
+        btn.first.click,
+        JS_CONCILIACAO_ABERTA,
+        TIMEOUT_PADRAO_MS,
+        "conciliacao",
+    )
     try:
-        await esperar(conciliacao, JS_CONCILIACAO_PRONTA, TIMEOUT_PADRAO_MS, "conciliacao.pronta")
+        await esperar(
+            conciliacao, JS_CONCILIACAO_PRONTA, TIMEOUT_PADRAO_MS, "conciliacao.pronta"
+        )
     except TimeoutError:
         logger.warning("[automacao] conciliacao sem linhas de pagamento")
     return conciliacao
@@ -743,12 +961,17 @@ async def _abrir_conciliacao(page, context):
 
 async def _lancar_pagamentos(page, mapeamento: dict, categorias: dict) -> int:
     subtipos = await page.evaluate("""
-        () => Array.from(document.querySelectorAll('tr[ng-repeat*="RS_PAGAMENTOS"]')).map((row, i) => {
-            const tds = row.querySelectorAll('td');
-            return { i, subtipo: tds.length > 2 ? (tds[2].textContent || '').trim() : '' };
-        })
+        () => {
+            const vis = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+            return Array.from(document.querySelectorAll('tr[ng-repeat*="RS_PAGAMENTOS"]'))
+                .filter(vis)
+                .map((row, i) => {
+                    const tds = row.querySelectorAll('td');
+                    return { i, subtipo: tds.length > 2 ? (tds[2].textContent || '').trim() : '' };
+                });
+        }
     """)
-    rows = page.locator('tr[ng-repeat*="RS_PAGAMENTOS"]')
+    rows = page.locator('tr[ng-repeat*="RS_PAGAMENTOS"]:visible')
     lancados = 0
     for item in subtipos or []:
         subtipo = _norm(item.get("subtipo"))
@@ -771,7 +994,7 @@ async def _lancar_pagamentos(page, mapeamento: dict, categorias: dict) -> int:
 
 
 async def _confirmar_conciliacao(page) -> bool:
-    btn = page.locator('a:has-text("Confirmar")')
+    btn = page.locator('a:has-text("Confirmar"):visible')
     if await btn.count() == 0:
         logger.warning("[automacao] botao Confirmar nao encontrado")
         return False
@@ -789,18 +1012,26 @@ async def executar_lancamento(
     categorias: dict,
 ) -> dict[str, Any]:
     """Preenche dinheiro + pagamentos. Deixa as páginas abertas."""
-    row = page.locator('tr[ng-repeat*="sknDataProviderFiltered"]').nth(caixa.row_index)
+    row = page.locator('tr[ng-repeat*="sknDataProviderFiltered"]:visible').nth(
+        caixa.row_index
+    )
     botao = row.locator("td .material-icons").last
-    detalhe = await _abrir_popup(page, context, botao.click)
-    if detalhe is not page:
-        try:
-            await esperar(detalhe, JS_DETALHE_PRONTO, TIMEOUT_CURTO_MS, "lancar.detalhe")
-        except TimeoutError:
-            if not await detalhe.evaluate(JS_CONTAR_FORMAS):
-                raise RuntimeError(
-                    "Tabela de formas de pagamento nao carregou; nada foi lancado."
-                )
-            logger.warning("[automacao] detalhe do lancamento sem linhas")
+    detalhe, _inline = await _abrir_pagina_ou_inline(
+        page,
+        context,
+        botao.click,
+        JS_DETALHE_ABERTO,
+        TIMEOUT_CURTO_MS,
+        "lancar.detalhe",
+    )
+    try:
+        await esperar(detalhe, JS_DETALHE_PRONTO, TIMEOUT_CURTO_MS, "lancar.detalhe")
+    except TimeoutError:
+        if not await detalhe.evaluate(JS_CONTAR_FORMAS):
+            raise RuntimeError(
+                "Tabela de formas de pagamento nao carregou; nada foi lancado."
+            )
+        logger.warning("[automacao] detalhe do lancamento sem linhas")
 
     await _lancar_dinheiro(detalhe, dinheiro_valor)
     conciliacao = await _abrir_conciliacao(detalhe, context)

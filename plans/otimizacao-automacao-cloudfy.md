@@ -144,3 +144,42 @@ Validação local sem credenciais (Cloudfy falso em HTML):
 
 Pendente: smoke real no Cloudfy (credenciais), validar `storage_state` da
 sessão AngularJS e possíveis ajustes de seletor.
+
+## Correção 2026-10-27 — T2 igual ao T1
+
+Sintoma: no lote T1+T2 o T2 vinha com os mesmos valores do T1 e, às vezes,
+não aparecia importado.
+
+Causa raiz confirmada no Cloudfy real (`automacao`):
+
+- O detalhe do caixa e a conciliação de cartões abrem **inline na mesma aba**
+  (`#/H02SF0108B`), não em popup.
+- `_abrir_popup` esperava 10s por uma nova aba, desistia e devolvia a mesma
+  página. O detalhe do T1 continuava aberto.
+- O lote usava `row_index` e a lista estava escondida; a abertura do T2 caía
+  no detalhe do T1, lendo DINHEIRO/pagamentos do T1.
+- A falha do T2 era silenciosa no front se o T1 tivesse dado ok.
+
+Correção em `automacao.py` / `automacao_sessao.py`:
+
+- `_abrir_pagina_ou_inline`: aceita popup **ou** conteúdo inline; poll tolera
+  reload/contexto destruído; sem espera fixa de 10s.
+- Filtro de linhas **visíveis** em `JS_LISTAR`, `JS_DINHEIRO`,
+  `JS_PAGAMENTOS`, prontidão e contadores.
+- `Voltar` visível: conciliação → detalhe → lista. `garantir_lista` recupera
+  com reload se necessário.
+- `abrir_detalhes` volta para a lista no `finally`; `executar_lancamento`
+  continua deixando a janela aberta.
+- `importar` relê a lista e resolve a **chave estável** antes de cada caixa;
+  T2 ausente vira erro explícito em vez de reutilizar T1.
+- Front: importação parcial passa a mostrar `Importacao parcial: ...`.
+
+Verificação real (2026-10-27, credenciais de automação):
+
+- T1 26/10: DINHEIRO 632,35; T2 26/10: DINHEIRO 755,30.
+- T2 sozinho: 755,30. Lote repetido 2x: T1 632,35 / T2 755,30.
+- Tempos por caixa: ~1,2–1,7s; detalhe/conciliação inline ~0,15s.
+- Auto Lançar inline validado até o preenchimento de DINHEIRO e 8 formas de
+  pagamento, sem clicar Confirmar.
+- UI E2E com TinyDB temporário: importação 2/2, split armado em 14:03,
+  T1 sistema 632,35 e T2 sistema 755,30.

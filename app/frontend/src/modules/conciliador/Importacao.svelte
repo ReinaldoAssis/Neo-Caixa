@@ -1300,6 +1300,12 @@
       return msg;
     }
 
+    const falhasMsg = resultados
+      .filter((r) => !r?.ok)
+      .map((r) => r?.erro)
+      .filter(Boolean)
+      .join(" | ");
+
     const mapping = await buscarMapeamento();
     const itens = okItens.map((r) => ({
       r,
@@ -1335,6 +1341,10 @@
       }
       categorias = categorias;
       initRestSistemaVars();
+      if (falhasMsg) {
+        errorMessage = `Importacao parcial: ${falhasMsg}`;
+        return errorMessage;
+      }
       return null;
     }
 
@@ -1353,6 +1363,10 @@
 
     if (splitTime && (lastRestFile || autoImportFile)) {
       await splitImportedCsv(splitTime);
+    }
+    if (falhasMsg) {
+      errorMessage = `Importacao parcial: ${falhasMsg}`;
+      return errorMessage;
     }
     return null;
   }
