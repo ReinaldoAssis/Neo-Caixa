@@ -1,4 +1,4 @@
-.PHONY: dev-api dev-frontend dev build build-frontend build-bin clean install
+.PHONY: dev-api dev-frontend dev build build-frontend build-bin clean install test
 
 APP_NAME := helena
 
@@ -42,6 +42,9 @@ clean:
 	rm -rf build/ dist/ __pycache__/ app/frontend/dist/ app/**/__pycache__/
 	rm -rf app/**/*/__pycache__/
 	rm -rf app/**/*/*/__pycache__/
+
+test:
+	python -m pytest -q
 
 install:
 	pip install -r requirements.txt

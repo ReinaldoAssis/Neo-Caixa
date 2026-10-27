@@ -30,6 +30,11 @@
   let savingMap = $state(false);
   let cloudfyPadrao = $state<Record<string, string>>({});
 
+  let relatorioCsvDir = $state("");
+  let savingFolder = $state(false);
+  let testingFolder = $state(false);
+  let folderTest = $state<{ ok: boolean; total?: number; exemplos?: string[]; error?: string } | null>(null);
+
   let activeTab = $state<"geral" | "grupos" | "equivalencias">("geral");
 
   // ─── Auto-update ───
@@ -72,9 +77,13 @@
       const res = await fetch("/api/update/download", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ download_url: updInfo.download_url, asset_name: updInfo.asset_name }),
-      });
-      const data = await res.json();
+        body: JSON.stringify({
+          download_url: updInfo.download_url,
+          asset_name: updInfo.asset_name,
+          size: updInfo.download_size,
+          sha256: updInfo.download_sha256,
+        }),
+      });      const data = await res.json();
       if (data.downloaded) {
         updDownloadedPath = data.path;
         updStatus = "Download concluido. Clique em Instalar para aplicar.";
@@ -137,6 +146,7 @@
         cloudfyLogin = s.cloudfy_login || "";
         cloudfySenha = s.cloudfy_senha || "";
         cloudfyDebug = s.cloudfy_debug || false;
+        relatorioCsvDir = s.relatorio_csv_dir || "";
       }
       const mres = await fetch("/api/conciliador/config/mapeamento");
       if (mres.ok) {
@@ -222,6 +232,42 @@
       flash(e.message, "err");
     } finally {
       savingMap = false;
+    }
+  }
+
+  async function saveFolder() {
+    savingFolder = true;
+    folderTest = null;
+    try {
+      const res = await fetch("/api/conciliador/config/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ relatorio_csv_dir: relatorioCsvDir.trim() }),
+      });
+      if (!res.ok) throw new Error("Erro ao salvar a pasta do relatorio CSV.");
+      flash("Pasta do relatorio CSV salva.");
+    } catch (e: any) {
+      flash(e.message, "err");
+    } finally {
+      savingFolder = false;
+    }
+  }
+
+  async function testFolder() {
+    const path = relatorioCsvDir.trim();
+    if (!path) return;
+    testingFolder = true;
+    folderTest = null;
+    try {
+      const res = await fetch(
+        `/api/conciliador/config/pasta-csv/testar?path=${encodeURIComponent(path)}`,
+      );
+      const data = await res.json();
+      folderTest = data;
+    } catch (e: any) {
+      folderTest = { ok: false, error: e.message || "Erro ao testar a pasta." };
+    } finally {
+      testingFolder = false;
     }
   }
 
@@ -502,6 +548,49 @@
                 ? "Serial opcional na contagem Geral, mas obrigatório nas demais contagens."
                 : "Serial opcional em todas as contagens."}
           </p>
+        </div>
+
+        <!-- Pasta do relatorio CSV (Restaurante) -->
+        <div class="border p-4">
+          <h2 class="text-sm font-semibold">Pasta do relatorio CSV (Restaurante)</h2>
+          <p class="mb-3 text-xs text-muted-foreground">
+            O programa procura nesta pasta o arquivo <code>pagMMDD.csv</code> (ex.: <code>pag1024.csv</code>)
+            que corresponde a data do caixa e importa automaticamente.
+          </p>
+          <div class="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              bind:value={relatorioCsvDir}
+              placeholder="Ex.: C:\Relatorios\PagBank"
+              class="w-[28rem] rounded-md border bg-background px-3 py-1.5 text-sm"
+            />
+            <button
+              onclick={saveFolder}
+              disabled={savingFolder}
+              class="inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {savingFolder ? "Salvando..." : "Salvar pasta"}
+            </button>
+            <button
+              onclick={testFolder}
+              disabled={testingFolder || !relatorioCsvDir.trim()}
+              class="inline-flex h-9 items-center border px-4 text-sm hover:bg-accent disabled:opacity-50"
+            >
+              {testingFolder ? "Testando..." : "Testar pasta"}
+            </button>
+          </div>
+          {#if folderTest}
+            {#if folderTest.ok}
+              <p class="mt-2 text-xs text-green-700">
+                Pasta valida. {folderTest.total} arquivo(s) pagMMDD.csv encontrado(s).
+                {#if folderTest.exemplos?.length}
+                  Exemplos: {folderTest.exemplos.join(", ")}
+                {/if}
+              </p>
+            {:else}
+              <p class="mt-2 text-xs text-red-600">{folderTest.error || "Pasta invalida."}</p>
+            {/if}
+          {/if}
         </div>
 
         <!-- Cloudfy -->

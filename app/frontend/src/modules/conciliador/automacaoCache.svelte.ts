@@ -61,3 +61,33 @@ export async function fetchCaixas() {
     _loading = false;
   }
 }
+
+/** dd/mm/yyyy (Cloudfy) -> yyyy-mm-dd (campo data do caixa). */
+function normalizeDate(raw: string): string {
+  const text = String(raw || "").trim();
+  const br = text.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (br) return `${br[3]}-${br[2]}-${br[1]}`;
+  return /^\d{4}-\d{2}-\d{2}/.test(text) ? text.slice(0, 10) : text;
+}
+
+/** Hora de fechamento do turno 1 para a data (formato "dd/mm HH:MM"). */
+export function turno1Fechamento(
+  isoDate: string,
+): { hora: string; pdv: string; movto: string } | null {
+  for (const caixa of _caixas) {
+    if (normalizeDate(caixa.data) !== isoDate) continue;
+
+    const turno = String(caixa.turno || "").replace(/\D/g, "");
+    const movtoT1 = /\bT\s*1\b/i.test(String(caixa.movto || ""));
+    if (turno !== "1" && !movtoT1) continue;
+
+    const match = String(caixa.horario_fechamento || "").match(/(\d{2}):(\d{2})\s*$/);
+    if (!match) continue;
+
+    const hora = `${match[1]}:${match[2]}`;
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(hora)) continue;
+
+    return { hora, pdv: caixa.pdv || "", movto: caixa.movto || "" };
+  }
+  return null;
+}

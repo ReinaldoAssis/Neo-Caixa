@@ -49,7 +49,12 @@ def create_app() -> FastAPI:
         if not url or not name:
             return {"downloaded": False, "error": "download_url e asset_name sao obrigatorios."}
         try:
-            path = updater.download_update(url, name)
+            path = updater.download_update(
+                url,
+                name,
+                expected_size=payload.get("size"),
+                sha256=payload.get("sha256"),
+            )
             return {"downloaded": True, "path": str(path), "error": None}
         except Exception as exc:
             return {"downloaded": False, "error": str(exc)}

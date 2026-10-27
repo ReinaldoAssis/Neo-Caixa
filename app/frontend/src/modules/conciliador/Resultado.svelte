@@ -18,7 +18,10 @@
   let caixaId = $state("");
 
   const isSplit = $derived(tipo === "restaurante" && !!caixa?.split_mode && !!caixa?.turnos);
-  let turnoRows = $state<{ turno: number; rows: any[]; totalDiff: number }[]>([]);
+  const ajusteDinheiro = $derived(
+    Number(caixa?.dinheiro_ajuste ?? extra?.dinheiro_ajuste ?? 0),
+  );
+  let turnoRows = $state<{ turno: number; rows: any[]; totalDiff: number; ajuste: number }[]>([]);
 
   let postoLabels = $state<Record<string, string>>({
     PREMMIA_CARTAO: "PREMMIA CARTAO", PREMMIA_PIX: "PREMMIA PIX",
@@ -111,11 +114,12 @@
     turnoRows = [1, 2].map((n) => {
       const store = turnos[String(n)] || { categorias: {}, contagens: [], avulsos: [] };
       const geral = (store.contagens || []).find((c: any) => c.label === "Geral");
-      const dinheiroReal = geral?.total || 0;
+      const ajuste = Number(store.dinheiro_ajuste || 0);
+      const dinheiroReal = (geral?.total || 0) + ajuste;
       const avulsosTurno = lancamentosAvulsos.filter((a) => Number(a.turno) === n);
       const r = buildRestRowsFor(store.categorias || {}, avulsosTurno, dinheiroReal);
       const totalDiff = Math.round(r.reduce((s, row) => s + (row.diferenca || 0), 0) * 100) / 100;
-      return { turno: n, rows: r, totalDiff };
+      return { turno: n, rows: r, totalDiff, ajuste };
     });
   }
 
@@ -180,9 +184,11 @@
         despesas: caixa.despesas || 0,
       };
     } else {
-      const dinheiroReal = contagens
-        .filter((c: any) => c.label === "Geral")
-        .reduce((s: number, c: any) => s + (c.total || 0), 0);
+      const dinheiroReal =
+        contagens
+          .filter((c: any) => c.label === "Geral")
+          .reduce((s: number, c: any) => s + (c.total || 0), 0) +
+        Number(caixa.dinheiro_ajuste || 0);
       for (const key of restCategories) {
         const v = cats[key] || { sistema: 0, real: 0 };
         let sistema = v.sistema || 0;
@@ -482,6 +488,30 @@
           <p class="text-sm">Notas a Prazo: {formatMoney(extra.notas_a_prazo)}</p>
           <p class="text-sm">Despesas do Posto: {formatMoney(extra.despesas)}</p>
         </div>
+      {/if}
+
+      {#if tipo === "restaurante"}
+        {#if isSplit}
+          {#if turnoRows.some((tr) => tr.ajuste !== 0)}
+            <div class="mt-6 rounded-lg border p-4">
+              <h3 class="mb-2 font-semibold">Informacoes Complementares</h3>
+              {#each turnoRows as tr}
+                {#if tr.ajuste !== 0}
+                  <p class="text-sm">
+                    Turno {tr.turno} - ajuste manual do DINHEIRO: {formatMoney(tr.ajuste)}
+                  </p>
+                {/if}
+              {/each}
+            </div>
+          {/if}
+        {:else if ajusteDinheiro !== 0}
+          <div class="mt-6 rounded-lg border p-4">
+            <h3 class="mb-2 font-semibold">Informacoes Complementares</h3>
+            <p class="text-sm">
+              Ajuste manual do DINHEIRO: {formatMoney(ajusteDinheiro)}
+            </p>
+          </div>
+        {/if}
       {/if}
 
       <!-- Lancamentos Avulsos na tela de resultado -->

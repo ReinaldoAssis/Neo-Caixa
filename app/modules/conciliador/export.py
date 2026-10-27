@@ -95,8 +95,15 @@ def generate_conciliation_pdf_bytes(caixa: dict, posto_config: dict | None = Non
                 ]),
             ])
         else:
-            geral = next((c for c in contagens if c.get("label") == "Geral"), None)
-            dinheiro_real = round(geral.get("total", 0) if geral else 0, 2)
+            dinheiro_real = round(
+                sum(
+                    float(c.get("total", 0) or 0)
+                    for c in contagens
+                    if c.get("label") == "Geral"
+                )
+                + float(caixa.get("dinheiro_ajuste", 0) or 0),
+                2,
+            )
             table_data = [["Categoria", "Classif.", "Sistema", "Real", "Diferenca", "Status"]]
             for row in build_conciliation_rows_restaurante(
                 caixa.get("categorias", {}), avulsos, dinheiro_real
@@ -109,6 +116,33 @@ def generate_conciliation_pdf_bytes(caixa: dict, posto_config: dict | None = Non
                     format_money(row["diferenca"]),
                     row["status"],
                 ])
+            story.append(_styled_table(table_data))
+
+            ajustes: list[str] = []
+            turnos = caixa.get("turnos") or {}
+            if turnos:
+                for numero in ("1", "2"):
+                    turno_data = turnos.get(numero) or {}
+                    ajuste_turno = float(turno_data.get("dinheiro_ajuste", 0) or 0)
+                    if ajuste_turno:
+                        ajustes.append(
+                            f"Turno {numero} - ajuste manual do DINHEIRO: "
+                            f"{format_money(ajuste_turno)}"
+                        )
+            else:
+                ajuste_total = float(caixa.get("dinheiro_ajuste", 0) or 0)
+                if ajuste_total:
+                    ajustes.append(
+                        f"Ajuste manual do DINHEIRO: {format_money(ajuste_total)}"
+                    )
+
+            if ajustes:
+                story.extend([
+                    Spacer(1, 0.4 * cm),
+                    Paragraph("Informacoes Complementares", styles["Heading2"]),
+                ])
+                for linha in ajustes:
+                    story.append(Paragraph(linha, styles["Normal"]))
 
         # Lancamentos avulsos
         if avulsos:

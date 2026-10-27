@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query
@@ -21,12 +22,19 @@ from app.modules.conciliador.parsers import (
     parse_premmia_file,
     parse_restaurante_pagbank_csv,
     parse_restaurante_pagbank_split,
+    split_restaurante_pagbank_file,
 )
 from app.modules.conciliador.services import (
     totals_posto,
     totals_restaurante,
     consolidate_contagens,
     validate_contagens,
+    total_contagens_dinheiro,
+)
+from app.modules.conciliador.relatorio_pasta import (
+    find_report_file,
+    list_reports,
+    resolve_report_file,
 )
 from app.modules.conciliador.config_posto import (
     load_config,
@@ -139,11 +147,14 @@ def _normalize_restaurante(data: dict) -> dict:
     data.setdefault("lancamentos_avulsos", [])
     data.setdefault("observacoes", "")
     data.setdefault("dinheiro_real", 0.0)
+    data.setdefault("dinheiro_ajuste", 0.0)
     data.setdefault("criado_em", now)
     data["atualizado_em"] = now
     avulsos = data.get("lancamentos_avulsos") or []
     contagens = data.get("contagens_dinheiro") or []
-    dinheiro_real = _dinheiro_real_from_contagens(contagens)
+    ajuste = round(float(data.get("dinheiro_ajuste") or 0), 2)
+    data["dinheiro_ajuste"] = ajuste
+    dinheiro_real = round(_dinheiro_real_from_contagens(contagens) + ajuste, 2)
     total_sistema, total_real, diferenca = totals_restaurante(
         data["categorias"], avulsos, dinheiro_real
     )
@@ -166,14 +177,10 @@ def _sanitize_for_response(doc: dict) -> dict:
 def _dinheiro_real_from_contagens(contagens: list[dict]) -> float:
     """Soma o total de todas as contagens 'Geral'.
 
-    Em caixa normal existe uma unica 'Geral'. Em caixa dividido (T1/T2)
-    as contagens de ambos os turnos sao mescladas, gerando duas 'Geral';
-    ambas devem somar no dinheiro real combinado.
+    Mantido como alias do servico compartilhado (usado tambem pelo ajuste
+    manual do DINHEIRO e pelos testes).
     """
-    gerais = [c for c in (contagens or []) if c.get("label") == "Geral"]
-    if not gerais:
-        return 0.0
-    return round(sum(float(c.get("total", 0) or 0) for c in gerais), 2)
+    return total_contagens_dinheiro(contagens)
 
 
 def _dinheiro_breakdown(contagens: list[dict]) -> tuple[float, float]:
@@ -394,6 +401,56 @@ async def parser_pagbank_restaurante_split(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.post("/parser/pagbank-restaurante-split-arquivo")
+async def parser_pagbank_restaurante_split_arquivo(data: dict):
+    """Divide um CSV que ja esta na pasta configurada (auto-import)."""
+    filename = (data.get("filename") or "").strip()
+    split_time = (data.get("split_time") or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="Informe o nome do arquivo.")
+    if not split_time:
+        raise HTTPException(status_code=400, detail="Informe o horario de divisao.")
+
+    settings = load_settings(app_context.database)
+    directory = settings.get("relatorio_csv_dir", "")
+    try:
+        path = resolve_report_file(directory, filename)
+        return split_restaurante_pagbank_file(path, split_time)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/restaurante/csv-auto")
+async def restaurante_csv_auto(data: str = Query(...), split_time: str | None = Query(None)):
+    """Busca o relatorio pagMMDD.csv da data do caixa na pasta configurada."""
+    settings = load_settings(app_context.database)
+    directory = settings.get("relatorio_csv_dir", "")
+    if not directory:
+        return {"found": False, "filename": None, "split": False, "result": None}
+
+    path = find_report_file(directory, data)
+    if not path:
+        return {"found": False, "filename": None, "split": False, "result": None}
+
+    try:
+        content = path.read_bytes()
+        if split_time:
+            result = parse_restaurante_pagbank_split(content, path.name, split_time)
+            split = True
+        else:
+            result = parse_restaurante_pagbank_csv(content, path.name)
+            split = False
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {
+        "found": True,
+        "filename": path.name,
+        "split": split,
+        "result": result,
+    }
+
+
 # ─── Resultado (conferencia) ──────────────────────────────────────
 
 @router.post("/conciliacoes/{conciliacao_id}/resultado")
@@ -405,7 +462,8 @@ async def build_resultado(conciliacao_id: str):
 
     if tipo == "restaurante":
         from app.modules.conciliador.services import build_conciliation_rows_restaurante
-        dinheiro_real = _dinheiro_real_from_contagens(contagens)
+        ajuste = float(doc.get("dinheiro_ajuste") or 0)
+        dinheiro_real = round(_dinheiro_real_from_contagens(contagens) + ajuste, 2)
         rows = build_conciliation_rows_restaurante(
             doc.get("categorias", {}), avulsos, dinheiro_real
         )
@@ -421,6 +479,11 @@ async def build_resultado(conciliacao_id: str):
 
     return {
         "rows": rows,
+        "dinheiro_ajuste": float(doc.get("dinheiro_ajuste") or 0),
+        "turnos_ajuste": {
+            str(numero): float((turno or {}).get("dinheiro_ajuste") or 0)
+            for numero, turno in (doc.get("turnos") or {}).items()
+        },
         "total_sistema": doc.get("total_sistema", 0),
         "total_site" if tipo == "posto" else "total_real": doc.get(
             "total_site" if tipo == "posto" else "total_real", 0
@@ -504,6 +567,24 @@ async def update_module_settings(data: dict):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return saved
+
+
+@router.get("/config/pasta-csv/testar")
+async def testar_pasta_csv(path: str = Query(...)):
+    directory = Path(path).expanduser()
+    if not directory.is_dir():
+        return {
+            "ok": False,
+            "error": "Pasta nao encontrada ou nao e um diretorio.",
+            "total": 0,
+            "exemplos": [],
+        }
+    reports = list_reports(directory)
+    return {
+        "ok": True,
+        "total": len(reports),
+        "exemplos": [report.name for report in reports[:10]],
+    }
 
 
 # ─── Mapeamento Cloudfy → Sistema ──────────────────────────────

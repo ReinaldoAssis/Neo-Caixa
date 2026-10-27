@@ -5,6 +5,7 @@
   import ContagemDinheiro from "./ContagemDinheiro.svelte";
   import Select from "./Select.svelte";
   import AutomacaoModal from "./AutomacaoModal.svelte";
+  import { turno1Fechamento } from "./automacaoCache.svelte";
 
   interface Props {
     tipo: "posto" | "restaurante";
@@ -82,7 +83,14 @@
     MASTERCARD: "CREDITO", VISA: "CREDITO", DINHEIRO: "DINHEIRO",
   };
 
-  let data = $state(new Date().toISOString().slice(0, 10));
+  function localISO(offsetDays = 0): string {
+    const now = new Date();
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offsetDays);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+
+  let data = $state(tipo === "restaurante" ? localISO(-1) : localISO(0));
   let status = $state("rascunho");
   let readonly = $derived(status === "conciliado");
   let turno = $state("Todos");
@@ -91,14 +99,26 @@
   let splitMode = $state(false);
   let splitTime = $state("");
   let activeTurno = $state(1);
-  let turnoStore = $state<Record<number, {
+  type RestTurno = {
     categorias: Record<string, any>;
     sistemaVars: Record<string, string>;
+    realVars: Record<string, string>;
     contagens: any[];
     avulsos: any[];
-  }>>({ 1: null as any, 2: null as any });
+    dinheiro_ajuste: number;
+  };
+  let turnoStore = $state<Record<number, RestTurno>>({ 1: null as any, 2: null as any });
   let showSplitModal = $state(false);
   let splitModalTime = $state("");
+
+  // Ajuste manual do DINHEIRO: real = total da contagem + ajuste
+  let dinheiroAjuste = $state(0);
+  // CSV importado manualmente (mantido em memoria para permitir dividir depois)
+  let lastRestFile: File | null = null;
+  let lastRestFileDate = "";
+  // CSV importado automaticamente da pasta configurada
+  let autoImportFile = $state("");
+  let lastAutoImportKey = "";
 
   let categorias = $state<Record<string, { sistema: number; site?: number; real?: number }>>({});
   let sistemaVars = $state<Record<string, string>>({});
@@ -197,6 +217,8 @@
     initCategories();
     if (conciliacaoId) {
       await loadConciliacao(conciliacaoId);
+      // Rascunho existente: nao reimporta automaticamente ao abrir
+      lastAutoImportKey = `${data}|${splitMode && splitTime ? splitTime : ""}`;
     }
     hydrated = true;
   });
@@ -259,11 +281,12 @@
         initPostoSistemaVars();
         handleContagemChange();
       } else {
+        dinheiroAjuste = Number(doc.dinheiro_ajuste || 0);
         if (doc.split_mode && doc.turnos) {
           splitMode = true;
           splitTime = doc.split_time || "";
-          turnoStore[1] = doc.turnos["1"] || emptyRestTurno();
-          turnoStore[2] = doc.turnos["2"] || emptyRestTurno();
+          turnoStore[1] = normalizeTurno(doc.turnos["1"]);
+          turnoStore[2] = normalizeTurno(doc.turnos["2"]);
           activeTurno = 1;
           loadTurno(1);
           initRestSistemaVars();
@@ -443,6 +466,10 @@
     const file = input.files?.[0];
     if (!file) return;
 
+    lastRestFile = file;
+    lastRestFileDate = data;
+    autoImportFile = "";
+
     if (splitMode) {
       loading = true;
       try {
@@ -452,7 +479,7 @@
         );
         applySplitReais(result);
         statusRestPagbank =
-          `Dividido em ${splitTime} — T1: ${result.turno1?.registros_aprovados || 0} / T2: ${result.turno2?.registros_aprovados || 0} registros`;
+          `Dividido em ${splitTime} (${file.name}) — T1: ${result.turno1?.registros_aprovados || 0} / T2: ${result.turno2?.registros_aprovados || 0} registros`;
       } catch (err: any) {
         errorMessage = err.message;
       } finally {
@@ -479,7 +506,7 @@
       const qs = params.toString();
       const endpoint = `/parser/pagbank-restaurante${qs ? "?" + qs : ""}`;
       const result = await uploadFile(endpoint, file);
-      statusRestPagbank = `${result.registros_aprovados} registros aprovados`;
+      statusRestPagbank = `${result.registros_aprovados} registros aprovados (${file.name})`;
       for (const key of restCategories) {
         if (key === "DINHEIRO") continue;
         categorias[key].real = result.categorias?.[key]?.real || 0;
@@ -506,7 +533,7 @@
     };
   }
 
-  function emptyRestTurno() {
+  function emptyRestTurno(): RestTurno {
     const cats: Record<string, any> = {};
     const vars: Record<string, string> = {};
     const rvars: Record<string, string> = {};
@@ -515,7 +542,30 @@
       vars[key] = "";
       rvars[key] = "";
     }
-    return { categorias: cats, sistemaVars: vars, realVars: rvars, contagens: [emptyGeralContagem()], avulsos: [] };
+    return {
+      categorias: cats,
+      sistemaVars: vars,
+      realVars: rvars,
+      contagens: [emptyGeralContagem()],
+      avulsos: [],
+      dinheiro_ajuste: 0,
+    };
+  }
+
+  function normalizeTurno(raw: any): RestTurno {
+    const base = emptyRestTurno();
+    if (!raw) return base;
+    return {
+      categorias: { ...base.categorias, ...(raw.categorias || {}) },
+      sistemaVars: { ...base.sistemaVars, ...(raw.sistemaVars || {}) },
+      realVars: { ...base.realVars, ...(raw.realVars || {}) },
+      contagens:
+        Array.isArray(raw.contagens) && raw.contagens.length
+          ? raw.contagens
+          : base.contagens,
+      avulsos: Array.isArray(raw.avulsos) ? raw.avulsos : [],
+      dinheiro_ajuste: Number(raw.dinheiro_ajuste || 0),
+    };
   }
 
   function snapshotActiveTurno() {
@@ -525,6 +575,7 @@
       realVars: { ...realVars },
       contagens: JSON.parse(JSON.stringify(contagensDinheiro)),
       avulsos: JSON.parse(JSON.stringify(lancamentosAvulsos)),
+      dinheiro_ajuste: dinheiroAjuste,
     };
   }
 
@@ -533,9 +584,15 @@
     if (!s) return;
     categorias = s.categorias;
     sistemaVars = s.sistemaVars;
-    realVars = s.realVars || {};
+    const rv: Record<string, string> = { ...(s.realVars || {}) };
+    for (const key of restCategories) {
+      const catVal = Number(s.categorias?.[key]?.real || 0);
+      if (catVal && !rv[key]) rv[key] = String(catVal).replace(".", ",");
+    }
+    realVars = rv;
     contagensDinheiro = s.contagens;
     lancamentosAvulsos = s.avulsos;
+    dinheiroAjuste = Number(s.dinheiro_ajuste || 0);
   }
 
   function switchTurno(n: number) {
@@ -553,19 +610,100 @@
   function confirmSplit() {
     const t = splitModalTime.trim();
     if (!/^\d{2}:\d{2}$/.test(t)) { errorMessage = "Formato invalido. Use hh:mm"; return; }
-    splitTime = t;
-    // Turno 1 recebe os dados atuais; Turno 2 comeca vazio
-    turnoStore[1] = {
-      categorias: JSON.parse(JSON.stringify(categorias)),
-      sistemaVars: { ...sistemaVars },
-      realVars: { ...realVars },
-      contagens: JSON.parse(JSON.stringify(contagensDinheiro)),
-      avulsos: JSON.parse(JSON.stringify(lancamentosAvulsos)),
-    };
-    turnoStore[2] = emptyRestTurno();
-    activeTurno = 1;
-    splitMode = true;
     showSplitModal = false;
+    void executeSplit(t);
+  }
+
+  function formatDateBR(iso: string): string {
+    const [y, m, d] = String(iso || "").split("-");
+    return y && m && d ? `${d}/${m}/${y}` : iso;
+  }
+
+  async function openAutoSplit() {
+    const found = turno1Fechamento(data);
+    if (!found) {
+      errorMessage =
+        `Falha ao dividir: caixa do turno 1 de ${formatDateBR(data)} nao encontrado no cache da automacao. ` +
+        "Abra a Automacao para atualizar a lista de caixas.";
+      return;
+    }
+    splitTime = found.hora;
+    const ok = await executeSplit(found.hora);
+    if (ok) {
+      const ref = found.pdv || found.movto;
+      showToast(`Dividido em ${found.hora}${ref ? ` (${ref})` : ""}`);
+    }
+  }
+
+  /** Arma a divisao e, se ja houver CSV importado, divide os valores. */
+  async function executeSplit(time: string): Promise<boolean> {
+    splitTime = time;
+
+    if (!splitMode) {
+      // Turno 1 recebe os dados atuais; Turno 2 comeca vazio
+      turnoStore[1] = {
+        categorias: JSON.parse(JSON.stringify(categorias)),
+        sistemaVars: { ...sistemaVars },
+        realVars: { ...realVars },
+        contagens: JSON.parse(JSON.stringify(contagensDinheiro)),
+        avulsos: JSON.parse(JSON.stringify(lancamentosAvulsos)),
+        dinheiro_ajuste: dinheiroAjuste,
+      };
+      turnoStore[2] = emptyRestTurno();
+      activeTurno = 1;
+      splitMode = true;
+    }
+
+    if (!lastRestFile && !autoImportFile) {
+      errorMessage =
+        "Reimporte o CSV para dividir os valores. A divisao ficou armada: " +
+        "o proximo arquivo importado sera dividido entre os turnos.";
+      return false;
+    }
+
+    const ok = await splitImportedCsv(time);
+    if (ok) {
+      lastAutoImportKey = `${data}|${time}`;
+    }
+    return ok;
+  }
+
+  async function splitImportedCsv(time: string): Promise<boolean> {
+    loading = true;
+    try {
+      let result: any;
+      if (lastRestFile) {
+        result = await uploadFile(
+          `/parser/pagbank-restaurante-split?split_time=${encodeURIComponent(time)}`,
+          lastRestFile,
+        );
+      } else {
+        const res = await fetch(
+          "/api/conciliador/parser/pagbank-restaurante-split-arquivo",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filename: autoImportFile, split_time: time }),
+          },
+        );
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || "Erro ao dividir o arquivo.");
+        }
+        result = await res.json();
+      }
+      applySplitReais(result);
+      errorMessage = "";
+      statusRestPagbank =
+        `Dividido em ${time} — T1: ${result.turno1?.registros_aprovados || 0} / ` +
+        `T2: ${result.turno2?.registros_aprovados || 0} registros`;
+      return true;
+    } catch (err: any) {
+      errorMessage = err.message || "Erro ao dividir o arquivo.";
+      return false;
+    } finally {
+      loading = false;
+    }
   }
 
   function disableSplit() {
@@ -583,6 +721,15 @@
       if (key === "DINHEIRO") continue;
       store1.categorias[key] = { ...store1.categorias[key], real: result.turno1?.categorias?.[key]?.real || 0 };
       store2.categorias[key] = { ...store2.categorias[key], real: result.turno2?.categorias?.[key]?.real || 0 };
+    }
+    // realVars precisam refletir os dois turnos (switchTurno nao re-sincroniza)
+    for (const store of [store1, store2]) {
+      store.realVars = { ...(store.realVars || {}) };
+      for (const key of restCategories) {
+        if (key === "DINHEIRO") continue;
+        const val = Number(store.categorias[key]?.real || 0);
+        store.realVars[key] = val ? String(val).replace(".", ",") : "";
+      }
     }
     turnoStore[1] = store1;
     turnoStore[2] = store2;
@@ -608,8 +755,23 @@
   function handleRestRealChange(key: string, e: Event) {
     realVars[key] = (e.target as HTMLInputElement).value;
     const val = parseMoney(realVars[key]);
+    if (key === "DINHEIRO") {
+      dinheiroAjuste = Math.round((val - contagemTotal()) * 100) / 100;
+    }
     categorias[key] = { ...categorias[key], real: val };
     categorias = categorias;
+  }
+
+  function contagemTotal(): number {
+    const gerais = contagensDinheiro.filter((c: any) => c.label === "Geral");
+    return Math.round(
+      gerais.reduce((sum: number, c: any) => sum + Number(c.total || 0), 0) * 100,
+    ) / 100;
+  }
+
+  function resetDinheiroAjuste() {
+    dinheiroAjuste = 0;
+    handleContagemChange();
   }
 
   function getRestDiff(key: string): number {
@@ -700,9 +862,12 @@
 
   function handleContagemChange() {
     if (tipo === "restaurante") {
-      const geral = contagensDinheiro.find((c: any) => c.label === "Geral");
-      const dinheiroReal = geral?.total || 0;
-      categorias["DINHEIRO"] = { ...categorias["DINHEIRO"], sistema: categorias["DINHEIRO"].sistema, real: dinheiroReal };
+      const dinheiroReal = Math.round((contagemTotal() + dinheiroAjuste) * 100) / 100;
+      categorias["DINHEIRO"] = {
+        ...categorias["DINHEIRO"],
+        sistema: categorias["DINHEIRO"].sistema,
+        real: dinheiroReal,
+      };
       categorias = categorias;
       syncRealVars();
     } else {
@@ -950,6 +1115,9 @@
       base.turno = null;
       base.split_mode = true;
       base.split_time = splitTime;
+      base.dinheiro_ajuste = Math.round(
+        ((turnoStore[1]?.dinheiro_ajuste || 0) + (turnoStore[2]?.dinheiro_ajuste || 0)) * 100,
+      ) / 100;
       base.turnos = {
         "1": turnoStore[1],
         "2": turnoStore[2],
@@ -966,6 +1134,7 @@
       ];
     } else {
       base.turno = turno === "T1" ? 1 : turno === "T2" ? 2 : null;
+      base.dinheiro_ajuste = dinheiroAjuste;
     }
     return base;
   }
@@ -1024,7 +1193,74 @@
     void notasPrazo;
     void despesas;
     void observacoes;
+    void splitMode;
+    void splitTime;
+    void dinheiroAjuste;
     scheduleAutosave();
+  });
+
+  // ─── Auto-import do CSV da pasta configurada (restaurante) ───
+  async function tryAutoImport(key: string) {
+    if (key === lastAutoImportKey) return;
+    lastAutoImportKey = key;
+    if (tipo !== "restaurante" || readonly || !data) return;
+
+    const params = new URLSearchParams({ data });
+    if (splitMode && splitTime) params.set("split_time", splitTime);
+
+    try {
+      const res = await fetch(
+        `/api/conciliador/restaurante/csv-auto?${params.toString()}`,
+      );
+      if (!res.ok) return;
+      const payload = await res.json();
+      if (!payload.found) {
+        autoImportFile = "";
+        if (lastRestFileDate && lastRestFileDate !== data) {
+          lastRestFile = null;
+          lastRestFileDate = "";
+        }
+        return;
+      }
+
+      autoImportFile = payload.filename || "";
+      lastRestFile = null;
+      lastRestFileDate = "";
+      errorMessage = "";
+
+      if (payload.split) {
+        applySplitReais(payload.result);
+        statusRestPagbank =
+          `Importado da pasta: ${payload.filename} (dividido em ${splitTime})`;
+      } else {
+        for (const importKey of restCategories) {
+          if (importKey === "DINHEIRO") continue;
+          categorias[importKey] = {
+            ...categorias[importKey],
+            real: payload.result?.categorias?.[importKey]?.real || 0,
+          };
+        }
+        syncRealVars();
+        statusRestPagbank = `Importado da pasta: ${payload.filename}`;
+      }
+      showToast(`Relatorio ${payload.filename} importado da pasta.`);
+    } catch {
+      // auto-import e best-effort: sem arquivo/pasta nao mostra erro
+    }
+  }
+
+  $effect(() => {
+    const currentDate = data;
+    const currentSplit = splitMode && splitTime ? splitTime : "";
+    if (!hydrated || tipo !== "restaurante" || readonly || !currentDate) return;
+
+    const key = `${currentDate}|${currentSplit}`;
+    if (key === lastAutoImportKey) return;
+
+    const timer = setTimeout(() => {
+      void tryAutoImport(key);
+    }, 500);
+    return () => clearTimeout(timer);
   });
 
   const catOptions = $derived(tipo === "posto"
@@ -1134,7 +1370,7 @@
   {#if showSplitModal}
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onclick={() => (showSplitModal = false)}>
       <div class="w-96 border bg-background p-6 shadow-xl" onclick={(e) => e.stopPropagation()}>
-        <h3 class="mb-2 text-sm font-semibold">Dividir internamente por horario</h3>
+        <h3 class="mb-2 text-sm font-semibold">Dividir manualmente por horario</h3>
         <p class="mb-4 text-sm text-muted-foreground">
           Informe o horario de divisao. Tudo antes desse horario será Turno 1, o restante Turno 2.
         </p>
@@ -1187,10 +1423,16 @@
           </Select>
           {#if turno === "Todos" && !splitMode && !readonly}
             <button
-              onclick={openSplitModal}
-              class="ml-2 inline-flex h-8 items-center border border-primary px-3 text-sm text-primary hover:bg-accent"
+              onclick={openAutoSplit}
+              class="ml-2 inline-flex h-8 items-center bg-primary px-3 text-sm text-primary-foreground hover:bg-primary-hover"
             >
-              Dividir internamente
+              Dividir caixa
+            </button>
+            <button
+              onclick={openSplitModal}
+              class="inline-flex h-8 items-center border border-primary px-3 text-sm text-primary hover:bg-accent"
+            >
+              Dividir manualmente
             </button>
           {/if}
           {#if splitMode}
@@ -1407,7 +1649,7 @@
           </label>
           <button
             disabled={readonly}
-            onclick={() => { statusRestPagbank = "Nenhum arquivo importado"; for (const k of restCategories) { if (k !== "DINHEIRO") categorias[k].real = 0; } }}
+            onclick={() => { statusRestPagbank = "Nenhum arquivo importado"; for (const k of restCategories) { if (k !== "DINHEIRO") categorias[k].real = 0; } lastRestFile = null; lastRestFileDate = ""; autoImportFile = ""; }}
             class="inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-accent"
           >
             Remover
@@ -1512,7 +1754,23 @@
                       disabled={readonly}
                       placeholder="0,00"
                       class="w-28 rounded-md border px-2 py-1 text-sm"
+                      class:border-amber-500={key === "DINHEIRO" && dinheiroAjuste !== 0}
+                      class:bg-amber-50={key === "DINHEIRO" && dinheiroAjuste !== 0}
+                      class:text-amber-800={key === "DINHEIRO" && dinheiroAjuste !== 0}
                     />
+                    {#if key === "DINHEIRO" && dinheiroAjuste !== 0}
+                      <div class="mt-0.5 text-[10px] leading-tight text-amber-700">
+                        contagem {formatMoney(contagemTotal())} + ajuste {formatMoney(dinheiroAjuste)}
+                        <button
+                          type="button"
+                          class="ml-1 underline hover:no-underline disabled:opacity-50"
+                          onclick={resetDinheiroAjuste}
+                          disabled={readonly}
+                        >
+                          usar contagem
+                        </button>
+                      </div>
+                    {/if}
                   </td>
                   <td class="py-2">
                     <span class={Math.abs(diffVal) < 0.005 ? "text-green-600" : diffVal >= 0 ? "text-primary" : "text-red-600"}>

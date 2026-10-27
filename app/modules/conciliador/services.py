@@ -178,6 +178,19 @@ def totals_restaurante(
 
 # ─── Contagem de Dinheiro ────────────────────────────────────────
 
+def total_contagens_dinheiro(contagens: list[dict] | None) -> float:
+    """Soma o total de todas as contagens 'Geral'.
+
+    Em caixa normal existe uma unica 'Geral'. Em caixa dividido (T1/T2)
+    as contagens de ambos os turnos sao mescladas, gerando duas 'Geral';
+    ambas devem somar no dinheiro real combinado.
+    """
+    gerais = [c for c in (contagens or []) if c.get("label") == "Geral"]
+    if not gerais:
+        return 0.0
+    return round(sum(float(c.get("total", 0) or 0) for c in gerais), 2)
+
+
 def compute_contagem_total(contagem: dict) -> float:
     notas = contagem.get("notas", {})
     total = sum(int(notas.get(str(d), 0) or 0) * d for d in DENOMINATIONS)

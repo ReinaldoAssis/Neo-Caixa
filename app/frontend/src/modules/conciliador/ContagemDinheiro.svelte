@@ -11,6 +11,23 @@
 
   const denominations = [200, 100, 50, 20, 10, 5, 2];
   let activeTab = $state(0);
+  let container: HTMLDivElement;
+
+  function handleArrowNav(e: KeyboardEvent): boolean {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return false;
+    const input = e.target as HTMLInputElement;
+    const inputs = Array.from(
+      container?.querySelectorAll<HTMLInputElement>('input[data-nav="true"]') || [],
+    );
+    const idx = inputs.indexOf(input);
+    if (idx === -1) return false;
+    e.preventDefault();
+    const step = e.key === "ArrowDown" ? 1 : -1;
+    let next = idx + step;
+    while (next >= 0 && next < inputs.length && inputs[next].disabled) next += step;
+    if (next >= 0 && next < inputs.length) inputs[next].focus();
+    return true;
+  }
 
   function serialRequired(contagem: any): boolean {
     if (serialMode === "opcional_todas") return false;
@@ -179,7 +196,7 @@
   }
 </script>
 
-<div class="space-y-2">
+<div class="space-y-2" bind:this={container}>
   <!-- Tab buttons -->
   <div class="flex items-center gap-2">
     <div class="flex flex-1 flex-wrap items-center gap-1 border-b">
@@ -254,8 +271,10 @@
               <td class="py-0.5 pr-4">
                 <input
                   type="text"
+                  data-nav="true"
                   value={activeContagem.notas[String(denom)] || "0"}
                   oninput={(e) => handleNotaChange(activeContagem, denom, e)}
+                  onkeydown={(e) => handleArrowNav(e)}
                   disabled={readonly || (activeContagem.label === "Geral" && !activeContagem.editado)}
                   class="w-16 border bg-background px-2 py-0.5 text-sm"
                 />
@@ -270,9 +289,10 @@
               <input
                 type="text"
                 inputmode="decimal"
+                data-nav="true"
                 value={activeContagem.moedas || ""}
                 oninput={(e) => { const t = e.target as HTMLInputElement; const v = sanitizeDecimal(t.value); activeContagem.moedas = v; recalculate(activeContagem); }}
-                onkeydown={(e) => { if (e.key !== "Enter") return; e.preventDefault(); const t = e.target as HTMLInputElement; const r = evalExpr(t.value); if (r !== t.value) { t.value = r; activeContagem.moedas = sanitizeDecimal(r); recalculate(activeContagem); } }}
+                onkeydown={(e) => { if (handleArrowNav(e)) return; if (e.key !== "Enter") return; e.preventDefault(); const t = e.target as HTMLInputElement; const r = evalExpr(t.value); if (r !== t.value) { t.value = r; activeContagem.moedas = sanitizeDecimal(r); recalculate(activeContagem); } }}
                 disabled={readonly || (activeContagem.label === "Geral" && !activeContagem.editado)}
                 placeholder="0,00"
                 class="w-24 border bg-background px-2 py-0.5 text-sm"
@@ -287,9 +307,10 @@
               <input
                 type="text"
                 inputmode="decimal"
+                data-nav="true"
                 value={activeContagem.depositos || ""}
                 oninput={(e) => { const t = e.target as HTMLInputElement; const v = sanitizeDecimal(t.value); activeContagem.depositos = v; recalculate(activeContagem); }}
-                onkeydown={(e) => { if (e.key !== "Enter") return; e.preventDefault(); const t = e.target as HTMLInputElement; const r = evalExpr(t.value); if (r !== t.value) { t.value = r; activeContagem.depositos = sanitizeDecimal(r); recalculate(activeContagem); } }}
+                onkeydown={(e) => { if (handleArrowNav(e)) return; if (e.key !== "Enter") return; e.preventDefault(); const t = e.target as HTMLInputElement; const r = evalExpr(t.value); if (r !== t.value) { t.value = r; activeContagem.depositos = sanitizeDecimal(r); recalculate(activeContagem); } }}
                 disabled={readonly || (activeContagem.label === "Geral" && !activeContagem.editado)}
                 placeholder="0,00"
                 class="w-24 border bg-background px-2 py-0.5 text-sm"
