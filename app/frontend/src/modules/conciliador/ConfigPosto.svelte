@@ -696,7 +696,7 @@
           {/if}
         </div>
       </div>
-      {:else}
+      {:else if activeTab === "grupos"}
       <div class="space-y-4">
         <h2 class="text-sm font-semibold">Grupos de conciliação (Posto)</h2>
         <p class="text-xs text-muted-foreground">

@@ -287,3 +287,11 @@ Evidências:
   - "Dividir caixa" sem cache → aviso de falha;
   - troca de data → auto-import do arquivo correspondente.
 - `git diff --check`: limpo.
+
+### Correção do build CI (Svelte 5.57.3)
+
+- CI instala `svelte@^5.0.0` (resolvedor pegou 5.57.3) e o build local estava com
+  5.56.4, que tolerava um `{:else}` seguido de `{:else if}` em `ConfigPosto.svelte`.
+- Corrigido: `{:else}` (aba Grupos) → `{:else if activeTab === "grupos"}`.
+- Validado com Svelte 5.57.3: `npm run build` OK; abas Geral/Grupos/Equivalencias
+  renderizam; smoke completo do restaurante repetido com a mesma versão do CI.
