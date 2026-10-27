@@ -5,7 +5,7 @@
   import ContagemDinheiro from "./ContagemDinheiro.svelte";
   import Select from "./Select.svelte";
   import AutomacaoModal from "./AutomacaoModal.svelte";
-  import { turno1Fechamento } from "./automacaoCache.svelte";
+  import { turno1Fechamento, turnoCaixa } from "./automacaoCache.svelte";
 
   interface Props {
     tipo: "posto" | "restaurante";
@@ -884,50 +884,155 @@
     }
   }
 
-  async function handleAutomacaoImport(result: any) {
-    if (tipo !== "restaurante") return;
-
-    let mapping: Record<string, string> = {};
+  async function buscarMapeamento(): Promise<Record<string, string>> {
     try {
       const res = await fetch("/api/conciliador/config/mapeamento");
       if (res.ok) {
         const data = await res.json();
-        mapping = data.mapeamento || {};
+        return data.mapeamento || {};
       }
     } catch {
       // usa mapeamento vazio, nenhum pagamento mapeado
     }
+    return {};
+  }
 
-    const dinheiroVal = parseMoney(result.dinheiro || "0");
-    categorias["DINHEIRO"] = { ...categorias["DINHEIRO"], sistema: dinheiroVal, real: categorias["DINHEIRO"].real };
+  function aplicarResultadoAutomacao(
+    cats: Record<string, any>,
+    resultado: any,
+    mapping: Record<string, string>,
+    somar: boolean,
+  ) {
+    const dinheiroVal = parseMoney(resultado.dinheiro || "0");
+    const dinheiroAtual = somar ? Number(cats["DINHEIRO"]?.sistema || 0) : 0;
+    cats["DINHEIRO"] = {
+      ...(cats["DINHEIRO"] || { sistema: 0, real: 0 }),
+      sistema: Math.round((dinheiroAtual + dinheiroVal) * 100) / 100,
+      real: Number(cats["DINHEIRO"]?.real || 0),
+    };
 
-    const pagamentos: any[] = result.pagamentos || [];
-    for (const pg of pagamentos) {
-      const subtipoCloudfy = (pg.subtipo || "").trim();
+    for (const pg of resultado.pagamentos || []) {
+      const subtipoCloudfy = String(pg.subtipo || "").trim();
       const key = mapping[subtipoCloudfy];
-      if (!key) continue;
+      if (!key || !cats[key]) continue;
       const pos = parseMoney(pg.valor_vndpos || "0");
       const tef = parseMoney(pg.valor_vndtef || "0");
       const total = Math.round((pos + tef) * 100) / 100;
-      const current = categorias[key] || { sistema: 0, real: 0 };
-      categorias[key] = { ...current, sistema: Math.round((current.sistema + total) * 100) / 100 };
+      const atual = Number(cats[key].sistema || 0);
+      cats[key] = {
+        ...cats[key],
+        sistema: Math.round((atual + total) * 100) / 100,
+      };
     }
-
-    categorias = categorias;
-    initRestSistemaVars();
   }
 
-  async function handleAutomacaoLancar(caixaIdx: number) {
-    let mapping: Record<string, string> = {};
-    try {
-      const res = await fetch("/api/conciliador/config/mapeamento");
-      if (res.ok) {
-        const data = await res.json();
-        mapping = data.mapeamento || {};
-      }
-    } catch {
-      // usa vazio
+  function horaFechamentoT1(itens: { turno: number | null; r: any }[]): string | null {
+    for (const item of itens) {
+      if (item.turno !== 1) continue;
+      const raw = String(item.r?.caixa?.horario_fechamento || "");
+      const match = raw.match(/(\d{2}):(\d{2})\s*$/);
+      if (match) return `${match[1]}:${match[2]}`;
     }
+    return null;
+  }
+
+  function armarSplitAutomacao(hora: string) {
+    if (!splitMode) {
+      turnoStore[1] = {
+        categorias: JSON.parse(JSON.stringify(categorias)),
+        sistemaVars: { ...sistemaVars },
+        realVars: { ...realVars },
+        contagens: JSON.parse(JSON.stringify(contagensDinheiro)),
+        avulsos: JSON.parse(JSON.stringify(lancamentosAvulsos)),
+        dinheiro_ajuste: dinheiroAjuste,
+      };
+      turnoStore[2] = emptyRestTurno();
+      splitMode = true;
+      activeTurno = 1;
+      splitTime = hora;
+    } else if (!splitTime) {
+      splitTime = hora;
+    }
+  }
+
+  async function handleAutomacaoImport(result: any): Promise<string | null> {
+    if (tipo !== "restaurante") {
+      return "Automacao disponivel apenas para o restaurante.";
+    }
+
+    const resultados: any[] = Array.isArray(result?.resultados)
+      ? result.resultados
+      : [];
+    const okItens = resultados.filter((r) => r?.ok);
+    if (okItens.length === 0) {
+      const msg =
+        resultados
+          .map((r) => r?.erro)
+          .filter(Boolean)
+          .join(" | ") || "Nenhum caixa importado.";
+      errorMessage = msg;
+      return msg;
+    }
+
+    const mapping = await buscarMapeamento();
+    const itens = okItens.map((r) => ({
+      r,
+      turno: turnoCaixa((r.caixa || r.chave || {}) as any),
+    }));
+    const temT1 = itens.some((i) => i.turno === 1);
+    const temT2 = itens.some((i) => i.turno === 2);
+
+    if (temT2 && !splitMode && !temT1) {
+      const msg =
+        "Importe o caixa do turno 1 (ou arme o split) antes de importar o turno 2.";
+      errorMessage = msg;
+      return msg;
+    }
+
+    if (temT1 && temT2 && !splitMode) {
+      const hora = horaFechamentoT1(itens);
+      if (!hora) {
+        const msg =
+          "Nao encontrei o horario de fechamento do turno 1 para armar o split.";
+        errorMessage = msg;
+        return msg;
+      }
+      armarSplitAutomacao(hora);
+    }
+
+    if (!splitMode) {
+      // Comportamento antigo: tudo no turno ativo (somando se vier mais de um).
+      let primeiro = true;
+      for (const item of itens) {
+        aplicarResultadoAutomacao(categorias, item.r, mapping, !primeiro);
+        primeiro = false;
+      }
+      categorias = categorias;
+      initRestSistemaVars();
+      return null;
+    }
+
+    snapshotActiveTurno();
+    const usados: Record<number, boolean> = {};
+    for (const item of itens) {
+      const turno = item.turno === 2 ? 2 : item.turno === 1 ? 1 : activeTurno;
+      const store = turnoStore[turno] || emptyRestTurno();
+      aplicarResultadoAutomacao(store.categorias, item.r, mapping, Boolean(usados[turno]));
+      turnoStore[turno] = store;
+      usados[turno] = true;
+    }
+
+    loadTurno(activeTurno);
+    initRestSistemaVars();
+
+    if (splitTime && (lastRestFile || autoImportFile)) {
+      await splitImportedCsv(splitTime);
+    }
+    return null;
+  }
+
+  async function handleAutomacaoLancar(caixa: any, caixaIdx: number | null) {
+    const mapping = await buscarMapeamento();
 
     const dinheiroReal = categorias["DINHEIRO"]?.real || 0;
     const dinheiroStr = String(dinheiroReal).replace(".", ",");
@@ -937,20 +1042,22 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          caixa_idx: caixaIdx,
+          caixa: caixa || undefined,
+          caixa_idx: caixa ? undefined : caixaIdx,
+          data: data || undefined,
           dinheiro_valor: dinheiroStr,
           mapeamento: mapping,
           categorias: JSON.parse(JSON.stringify(categorias)),
         }),
       });
       if (!res.ok) {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({}));
         alert(err.detail || "Erro ao lancar no Cloudfy.");
         return;
       }
-      const data = await res.json();
-      if (data.erro) {
-        alert(data.erro);
+      const resposta = await res.json();
+      if (resposta.erro) {
+        alert(resposta.erro);
         return;
       }
     } catch (e: any) {
@@ -1930,6 +2037,7 @@
 
   {#if showAutomacao}
     <AutomacaoModal
+      formDate={data}
       onClose={() => (showAutomacao = false)}
       onImport={(result) => handleAutomacaoImport(result)}
     />
@@ -1938,9 +2046,10 @@
   {#if showLancamento}
     <AutomacaoModal
       mode="lancar"
+      formDate={data}
       onClose={() => (showLancamento = false)}
-      onImport={() => {}}
-      onLancar={(caixaIdx) => handleAutomacaoLancar(caixaIdx)}
+      onImport={() => null}
+      onLancar={(caixa, caixaIdx) => handleAutomacaoLancar(caixa, caixaIdx)}
     />
   {/if}
 </div>

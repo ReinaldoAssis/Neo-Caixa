@@ -24,6 +24,7 @@
   let cloudfyLogin = $state("");
   let cloudfySenha = $state("");
   let cloudfyDebug = $state(false);
+  let otimizarAutomacao = $state(true);
   let savingCloudfy = $state(false);
 
   let cloudfyMap = $state<Record<string, string>>({});
@@ -146,6 +147,7 @@
         cloudfyLogin = s.cloudfy_login || "";
         cloudfySenha = s.cloudfy_senha || "";
         cloudfyDebug = s.cloudfy_debug || false;
+        otimizarAutomacao = s.otimizar_automacao !== false;
         relatorioCsvDir = s.relatorio_csv_dir || "";
       }
       const mres = await fetch("/api/conciliador/config/mapeamento");
@@ -207,6 +209,7 @@
           cloudfy_login: cloudfyLogin,
           cloudfy_senha: cloudfySenha,
           cloudfy_debug: cloudfyDebug,
+          otimizar_automacao: otimizarAutomacao,
         }),
       });
       if (!res.ok) throw new Error("Erro ao salvar configuracoes Cloudfy");
@@ -623,6 +626,19 @@
               <label class="flex items-center gap-2 text-sm">
                 <input type="checkbox" bind:checked={cloudfyDebug} />
                 Abrir navegador visivel (debug)
+              </label>
+            </div>
+            <div class="flex items-start gap-3">
+              <label class="w-24 pt-0.5 text-sm">Otimizacao</label>
+              <label class="flex items-start gap-2 text-sm">
+                <input type="checkbox" class="mt-0.5" bind:checked={otimizarAutomacao} />
+                <span>
+                  Otimizar login da automacao
+                  <span class="block text-xs text-muted-foreground">
+                    Mantem uma sessao do Cloudfy aberta e reutiliza entre rodadas.
+                    Desligado = login novo a cada rodada.
+                  </span>
+                </span>
               </label>
             </div>
             <button

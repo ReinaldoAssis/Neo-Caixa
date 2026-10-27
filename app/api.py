@@ -34,6 +34,25 @@ def create_app() -> FastAPI:
     for router in app_context.module_registry.routers:
         app.include_router(router)
 
+    @app.on_event("startup")
+    def _aquecer_automacao():
+        """Sobe a sessão Cloudfy em background quando a otimização está ligada."""
+        try:
+            from app.modules.conciliador import automacao_sessao
+
+            automacao_sessao.warm_from_settings(app_context.database)
+        except Exception as exc:  # noqa: BLE001 - warm nunca deve derrubar o app
+            app_context.logger.warning("Falha ao agendar aquecimento da automacao: %s", exc)
+
+    @app.on_event("shutdown")
+    def _fechar_automacao():
+        try:
+            from app.modules.conciliador import automacao_sessao
+
+            automacao_sessao.fechar_sessao()
+        except Exception as exc:  # noqa: BLE001
+            app_context.logger.warning("Falha ao fechar sessao da automacao: %s", exc)
+
     @app.get("/api/health")
     async def health():
         return {"status": "ok", "version": app_context.config.VERSION}

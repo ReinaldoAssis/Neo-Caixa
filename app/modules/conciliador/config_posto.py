@@ -165,6 +165,7 @@ DEFAULT_SETTINGS = {
     "cloudfy_login": "",
     "cloudfy_senha": "",
     "cloudfy_debug": False,
+    "otimizar_automacao": True,
     "relatorio_csv_dir": "",
 }
 
@@ -191,6 +192,7 @@ def load_settings(database) -> dict:
         settings["cloudfy_login"] = doc.get("cloudfy_login", "")
         settings["cloudfy_senha"] = doc.get("cloudfy_senha", "")
         settings["cloudfy_debug"] = doc.get("cloudfy_debug", False)
+        settings["otimizar_automacao"] = doc.get("otimizar_automacao", True)
         settings["relatorio_csv_dir"] = doc.get("relatorio_csv_dir", "")
     return settings
 
@@ -221,6 +223,8 @@ def save_settings(database, data: dict) -> dict:
         settings["cloudfy_senha"] = str(data.get("cloudfy_senha", ""))
     if "cloudfy_debug" in data:
         settings["cloudfy_debug"] = bool(data.get("cloudfy_debug", False))
+    if "otimizar_automacao" in data:
+        settings["otimizar_automacao"] = bool(data.get("otimizar_automacao", True))
     if "relatorio_csv_dir" in data:
         settings["relatorio_csv_dir"] = str(data.get("relatorio_csv_dir", "")).strip()
 

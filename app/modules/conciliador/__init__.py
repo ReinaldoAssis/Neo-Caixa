@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -52,9 +53,12 @@ from app.modules.conciliador.export import generate_conciliation_pdf_bytes
 from app.modules.conciliador.automacao import (
     listar_caixas_cloudfy,
     importar_caixa_cloudfy,
+    importar_caixas_cloudfy,
     lancar_caixa_cloudfy,
     baixar_descontos_cloudfy,
 )
+from app.modules.conciliador import automacao_sessao
+from app.modules.conciliador.automacao_sessao import AutomacaoOcupada
 from app.modules.conciliador.descontos import (
     list_descontos,
     toggle_conferido,
@@ -566,6 +570,26 @@ async def update_module_settings(data: dict):
         saved = save_settings(app_context.database, data)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    chaves_cloudfy = {
+        "cloudfy_login",
+        "cloudfy_senha",
+        "cloudfy_debug",
+        "otimizar_automacao",
+    }
+    if chaves_cloudfy & set(data or {}):
+        if saved.get("otimizar_automacao", True):
+            automacao_sessao.warm_from_settings(app_context.database)
+        else:
+            import asyncio as aio
+
+            loop = aio.get_running_loop()
+            try:
+                await loop.run_in_executor(
+                    None, automacao_sessao.SESSAO.fechar_navegador
+                )
+            except AutomacaoOcupada:
+                pass
     return saved
 
 
@@ -611,15 +635,21 @@ async def update_mapeamento(data: dict):
 
 # ─── Automação Cloudfy ──────────────────────────────────────────
 
+def _cloudfy_config() -> tuple[str, str, bool, bool]:
+    settings = load_settings(app_context.database)
+    return (
+        settings.get("cloudfy_login", ""),
+        settings.get("cloudfy_senha", ""),
+        bool(settings.get("cloudfy_debug", False)),
+        bool(settings.get("otimizar_automacao", True)),
+    )
+
+
 @router.post("/automacao/listar")
 async def automacao_listar():
     import asyncio as aio
 
-    settings = load_settings(app_context.database)
-    login = settings.get("cloudfy_login", "")
-    senha = settings.get("cloudfy_senha", "")
-    debug = settings.get("cloudfy_debug", False)
-
+    login, senha, debug, otimizar = _cloudfy_config()
     if not login or not senha:
         raise HTTPException(
             status_code=400,
@@ -627,9 +657,12 @@ async def automacao_listar():
         )
 
     loop = aio.get_running_loop()
-    result = await loop.run_in_executor(
-        None, listar_caixas_cloudfy, login, senha, debug
-    )
+    try:
+        result = await loop.run_in_executor(
+            None, listar_caixas_cloudfy, login, senha, debug, otimizar
+        )
+    except AutomacaoOcupada as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     if "erro" in result:
         raise HTTPException(status_code=500, detail=result["erro"])
     return result
@@ -639,25 +672,49 @@ async def automacao_listar():
 async def automacao_importar(data: dict):
     import asyncio as aio
 
-    caixa_idx = data.get("caixa_idx")
-    if caixa_idx is None:
-        raise HTTPException(status_code=400, detail="Informe caixa_idx.")
-
-    settings = load_settings(app_context.database)
-    login = settings.get("cloudfy_login", "")
-    senha = settings.get("cloudfy_senha", "")
-    debug = settings.get("cloudfy_debug", False)
-
+    login, senha, debug, otimizar = _cloudfy_config()
     if not login or not senha:
         raise HTTPException(
             status_code=400,
             detail="Credenciais Cloudfy nao configuradas.",
         )
 
+    data_iso = data.get("data")
+    if data_iso is not None:
+        texto = str(data_iso).strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", texto):
+            raise HTTPException(status_code=400, detail="Campo 'data' deve ser YYYY-MM-DD.")
+        data_iso = texto
+
+    chaves = data.get("caixas")
     loop = aio.get_running_loop()
-    result = await loop.run_in_executor(
-        None, importar_caixa_cloudfy, login, senha, int(caixa_idx), debug
-    )
+
+    if chaves is not None:
+        if not isinstance(chaves, list) or not chaves:
+            raise HTTPException(status_code=400, detail="Informe 'caixas' com pelo menos 1 item.")
+        try:
+            return await loop.run_in_executor(
+                None,
+                importar_caixas_cloudfy,
+                login,
+                senha,
+                chaves,
+                data_iso,
+                debug,
+                otimizar,
+            )
+        except AutomacaoOcupada as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    caixa_idx = data.get("caixa_idx")
+    if caixa_idx is None:
+        raise HTTPException(status_code=400, detail="Informe 'caixas' ou 'caixa_idx'.")
+    try:
+        result = await loop.run_in_executor(
+            None, importar_caixa_cloudfy, login, senha, int(caixa_idx), debug, otimizar
+        )
+    except AutomacaoOcupada as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     if "erro" in result:
         raise HTTPException(status_code=500, detail=result["erro"])
     return result
@@ -668,34 +725,78 @@ async def automacao_lancar(data: dict):
     import asyncio as aio
 
     caixa_idx = data.get("caixa_idx")
-    if caixa_idx is None:
-        raise HTTPException(status_code=400, detail="Informe caixa_idx.")
+    caixa = data.get("caixa")
+    if caixa_idx is None and not isinstance(caixa, dict):
+        raise HTTPException(status_code=400, detail="Informe 'caixa' ou 'caixa_idx'.")
 
-    settings = load_settings(app_context.database)
-    login = settings.get("cloudfy_login", "")
-    senha = settings.get("cloudfy_senha", "")
-
+    login, senha, debug, otimizar = _cloudfy_config()
     if not login or not senha:
         raise HTTPException(status_code=400, detail="Credenciais Cloudfy nao configuradas.")
 
     dinheiro_valor = str(data.get("dinheiro_valor", "0")).replace(".", ",")
     mapeamento = data.get("mapeamento", {})
     categorias = data.get("categorias", {})
+    data_iso = data.get("data")
 
     loop = aio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        lancar_caixa_cloudfy,
-        login,
-        senha,
-        int(caixa_idx),
-        dinheiro_valor,
-        mapeamento,
-        categorias,
-    )
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lancar_caixa_cloudfy,
+            login,
+            senha,
+            int(caixa_idx) if caixa_idx is not None else None,
+            dinheiro_valor,
+            mapeamento,
+            categorias,
+            caixa if isinstance(caixa, dict) else None,
+            data_iso,
+            debug,
+            otimizar,
+        )
+    except AutomacaoOcupada as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     if "erro" in result:
         raise HTTPException(status_code=500, detail=result["erro"])
     return result
+
+
+@router.get("/automacao/status")
+async def automacao_status():
+    return automacao_sessao.SESSAO.status()
+
+
+@router.post("/automacao/reconectar")
+async def automacao_reconectar():
+    import asyncio as aio
+
+    login, senha, debug, _ = _cloudfy_config()
+    if not login or not senha:
+        raise HTTPException(status_code=400, detail="Credenciais Cloudfy nao configuradas.")
+
+    loop = aio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, automacao_sessao.SESSAO.reconectar, login, senha, debug
+        )
+    except AutomacaoOcupada as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=result.get("erro", "Falha ao reconectar."))
+    return result
+
+
+@router.post("/automacao/navegador/fechar")
+async def automacao_fechar_navegador():
+    import asyncio as aio
+
+    loop = aio.get_running_loop()
+    try:
+        return await loop.run_in_executor(
+            None, automacao_sessao.SESSAO.fechar_navegador
+        )
+    except AutomacaoOcupada as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 # ─── Gerenciador de Descontos ───────────────────────────────────
@@ -704,11 +805,7 @@ async def automacao_lancar(data: dict):
 async def descontos_sync():
     import asyncio as aio
 
-    settings = load_settings(app_context.database)
-    login = settings.get("cloudfy_login", "")
-    senha = settings.get("cloudfy_senha", "")
-    debug = settings.get("cloudfy_debug", False)
-
+    login, senha, debug, otimizar = _cloudfy_config()
     if not login or not senha:
         raise HTTPException(
             status_code=400,
@@ -716,9 +813,12 @@ async def descontos_sync():
         )
 
     loop = aio.get_running_loop()
-    result = await loop.run_in_executor(
-        None, baixar_descontos_cloudfy, login, senha, debug
-    )
+    try:
+        result = await loop.run_in_executor(
+            None, baixar_descontos_cloudfy, login, senha, debug, otimizar
+        )
+    except AutomacaoOcupada as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     if "erro" in result:
         raise HTTPException(status_code=500, detail=result["erro"])
 

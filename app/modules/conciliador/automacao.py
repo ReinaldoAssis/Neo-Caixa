@@ -1,25 +1,36 @@
 """
 Bridge entre a API do conciliador e o scraper Playwright do Cloudfy.
 
-Expõe funções síncronas que internamente rodam o loop async do Playwright.
+Aqui ficam apenas operações de página (recebem ``page``/``context`` já prontos)
+e parsers puros/testáveis. O ciclo de vida do navegador (sessão persistente,
+aquecimento, troca headless↔headed) mora em ``automacao_sessao.py``.
+
+As funções públicas continuam síncronas e delegam para a sessão singleton.
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
-import sys
+import re
 import tempfile
+import time
 from dataclasses import dataclass, field, asdict
 from typing import Any
+
+from app.core.logger import logger
 
 CLOUDY_BASE = "https://app.cloudfy.net.br/site"
 LOGIN_URL = f"{CLOUDY_BASE}/#/login"
 CONCILIADOR_URL = f"{CLOUDY_BASE}/#/H02SF0108B"
+HOME_URL = f"{CLOUDY_BASE}/#/"
 
 RELATORIO_DESCONTO_MENU = "Relatório de desconto"
 RELATORIO_POR_CUPOM = "Relatório por cupom"
 FORMA_VENDA_A_PRAZO = "venda a prazo"
+
+TIMEOUT_PADRAO_MS = 15000
+TIMEOUT_CURTO_MS = 8000
+TIMEOUT_POPUP_MS = 10000
 
 
 # ─── Models ────────────────────────────────────────────────────────
@@ -93,6 +104,11 @@ def _cell_float(value: Any) -> float:
     if isinstance(value, (int, float)):
         return round(float(value), 2)
     return _parse_brl(str(value))
+
+
+def _norm(value: Any) -> str:
+    """Normaliza texto vindo do Cloudfy/cache para comparação de chaves."""
+    return " ".join(str(value or "").split()).strip()
 
 
 _HEADER_ALIASES = {
@@ -172,604 +188,736 @@ def parse_descontos_xlsx(path: str) -> list[dict[str, Any]]:
     return parsed
 
 
-# ─── Scraper Async ─────────────────────────────────────────────────
+# ─── Chaves / datas / turnos (puro, testável) ─────────────────────
 
-class CloudfyScraper:
-    def __init__(self, login: str, senha: str, debug: bool = False):
-        self._login = login
-        self._senha = senha
-        self._debug = debug
+_DATA_RE = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{2,4})")
+_ISO_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
+_TURNO_RE = re.compile(r"\bT\s*([12])\b", re.IGNORECASE)
 
-    async def __aenter__(self) -> "CloudfyScraper":
-        from playwright.async_api import async_playwright
 
-        pw = await async_playwright().start()
+def normalizar_data_iso(raw: str) -> str | None:
+    """Converte 'dd/mm/yyyy', 'dd/mm/yy' ou 'yyyy-mm-dd...' para ISO."""
+    text = _norm(raw)
+    if not text:
+        return None
+    iso = _ISO_RE.match(text)
+    if iso:
+        return f"{iso.group(1)}-{iso.group(2)}-{iso.group(3)}"
+    br = _DATA_RE.match(text)
+    if br:
+        dia, mes, ano = int(br.group(1)), int(br.group(2)), int(br.group(3))
+        if ano < 100:
+            ano += 2000
+        return f"{ano:04d}-{mes:02d}-{dia:02d}"
+    return None
 
-        launch_options = {"headless": not self._debug}
 
-        try:
-            self._browser = await pw.chromium.launch(
-                channel="chrome", **launch_options
-            )
-        except Exception:
-            try:
-                self._browser = await pw.chromium.launch(**launch_options)
-            except Exception as e:
-                raise RuntimeError(
-                    "Navegador nao encontrado. Instale o Google Chrome ou "
-                    "execute 'playwright install chromium' no terminal."
-                ) from e
-        self._context = await self._browser.new_context()
-        self._page = await self._context.new_page()
-        return self
+def turno_de_caixa(caixa: CaixaResumo | dict) -> int | None:
+    """Turno pela coluna ``turno``; fallback para o texto de ``movto`` (T1/T2)."""
+    turno = caixa.get("turno") if isinstance(caixa, dict) else caixa.turno
+    digits = re.sub(r"\D", "", str(turno or ""))
+    if digits in ("1", "2"):
+        return int(digits)
+    movto = caixa.get("movto") if isinstance(caixa, dict) else caixa.movto
+    match = _TURNO_RE.search(str(movto or ""))
+    if match:
+        return int(match.group(1))
+    return None
 
-    async def __aexit__(self, *args: Any) -> None:
-        if getattr(self, "_keep_open", False):
-            return
-        if getattr(self, "_browser", None):
-            await self._browser.close()
 
-    async def login(self) -> bool:
-        page = self._page
-        await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-        await page.wait_for_timeout(3000)
+def chave_de_caixa(caixa: CaixaResumo | dict) -> dict[str, Any]:
+    def get(name: str) -> str:
+        return _norm(caixa.get(name) if isinstance(caixa, dict) else getattr(caixa, name, ""))
 
-        await page.fill('#loginControllerLoginId', self._login)
-        await page.fill('#inputPassword', self._senha)
-        await page.press('#inputPassword', 'Enter')
-        await page.wait_for_timeout(5000)
+    return {
+        "data": get("data"),
+        "pdv": get("pdv"),
+        "turno": get("turno"),
+        "movto": get("movto"),
+    }
 
-        if "login" in page.url.lower():
-            print("[ERRO] Login falhou.", file=sys.stderr)
-            return False
-        print("[OK] Login realizado.")
-        return True
 
-    async def navegar_conciliador(self) -> None:
-        page = self._page
+def _chave_confere(caixa: CaixaResumo, chave: dict) -> bool:
+    return all(
+        _norm(getattr(caixa, campo, "")) == _norm(chave.get(campo, ""))
+        for campo in ("data", "pdv", "turno", "movto")
+    )
+
+
+def validar_data_caixa(caixa: CaixaResumo, data_iso: str | None) -> str | None:
+    if not data_iso:
+        return None
+    iso = normalizar_data_iso(caixa.data)
+    if not iso:
+        return f"Data do caixa invalida: {caixa.data!r}."
+    if iso != data_iso:
+        return (
+            f"Caixa de {caixa.data} (turno {caixa.turno or '-'} / PDV "
+            f"{caixa.pdv or '-'}) fora da data da conciliacao ({data_iso})."
+        )
+    return None
+
+
+def resolver_caixas(
+    caixas: list[CaixaResumo],
+    chaves: list[dict],
+    data_iso: str | None = None,
+) -> tuple[list[tuple[CaixaResumo, dict]], list[dict]]:
+    """Resolve chaves estáveis (data/pdv/turno/movto) na lista recém-lida.
+
+    Devolve ``(resolvidos, erros)``. ``row_index`` serve só como desempate
+    quando a chave exata não existe (cache antigo do front).
+    """
+    resolvidos: list[tuple[CaixaResumo, dict]] = []
+    erros: list[dict] = []
+    usados: set[int] = set()
+    por_row_index = {caixa.row_index: caixa for caixa in caixas}
+
+    for chave in chaves or []:
+        if not isinstance(chave, dict):
+            erros.append({"chave": chave, "ok": False, "erro": "Chave invalida."})
+            continue
+
+        casada: CaixaResumo | None = None
+        for caixa in caixas:
+            if casada is None and id(caixa) not in usados and _chave_confere(caixa, chave):
+                casada = caixa
+
+        if casada is None:
+            row_index = chave.get("row_index")
+            if isinstance(row_index, int):
+                candidato = por_row_index.get(row_index)
+                if (
+                    candidato is not None
+                    and id(candidato) not in usados
+                    and _norm(candidato.data) == _norm(chave.get("data"))
+                ):
+                    casada = candidato
+
+        if casada is None:
+            erros.append({
+                "chave": chave,
+                "ok": False,
+                "erro": "Caixa nao encontrado na lista atual do Cloudfy. Atualize a lista.",
+            })
+            continue
+
+        usados.add(id(casada))
+        erro_data = validar_data_caixa(casada, data_iso)
+        if erro_data:
+            erros.append({"chave": chave, "ok": False, "erro": erro_data})
+            continue
+
+        resolvidos.append((casada, chave))
+
+    return resolvidos, erros
+
+
+# ─── Parsers de linhas extraídas por JS ────────────────────────────
+
+def parse_caixas_rows(rows: list[dict] | None) -> list[CaixaResumo]:
+    caixas: list[CaixaResumo] = []
+    for item in rows or []:
+        cells = [_cell_str(c) for c in (item.get("cells") or [])]
+        if len(cells) < 4:
+            continue
+        caixas.append(CaixaResumo(
+            data=cells[0] if len(cells) > 0 else "",
+            pdv=cells[1] if len(cells) > 1 else "",
+            turno=cells[2] if len(cells) > 2 else "",
+            horario_abertura=cells[3] if len(cells) > 3 else "",
+            horario_fechamento=cells[4] if len(cells) > 4 else "",
+            movto=cells[5] if len(cells) > 5 else "",
+            status=cells[6] if len(cells) > 6 else "",
+            valor=cells[9] if len(cells) > 9 else "",
+            row_index=int(item.get("i", len(caixas))),
+        ))
+    return caixas
+
+
+def parse_pagamentos_rows(rows: list[list[str]] | None) -> list[PagamentoCartao]:
+    pagamentos: list[PagamentoCartao] = []
+    for raw in rows or []:
+        texts = [_cell_str(c) for c in raw]
+        if len(texts) >= 4:
+            pagamentos.append(PagamentoCartao(
+                tipo=texts[0] if len(texts) > 0 else "",
+                bandeira=texts[1] if len(texts) > 1 else "",
+                subtipo=texts[2] if len(texts) > 2 else "",
+                valor_vndpos=texts[4] if len(texts) > 4 else "",
+                valor_vndtef=texts[5] if len(texts) > 5 else "",
+                valor_total=texts[6] if len(texts) > 6 else "",
+                quantidade=texts[7] if len(texts) > 7 else "",
+            ))
+    return pagamentos
+
+
+def parse_dinheiro_rows(rows: list[dict] | None) -> str:
+    for item in rows or []:
+        forma = _norm(item.get("forma")).upper()
+        if forma == "DINHEIRO":
+            return _norm(item.get("valor"))
+    return ""
+
+
+# ─── Timings ──────────────────────────────────────────────────────
+
+_TEMPOS: dict[str, float] = {}
+
+
+def _marcar(etapa: str, inicio: float) -> None:
+    _TEMPOS[etapa] = round(time.perf_counter() - inicio, 3)
+    logger.info("[automacao] %s: %.2fs", etapa, _TEMPOS[etapa])
+
+
+def tempos_recentes() -> dict[str, float]:
+    return dict(_TEMPOS)
+
+
+def zerar_tempos() -> None:
+    _TEMPOS.clear()
+
+
+# ─── JS de extração / prontidão ───────────────────────────────────
+
+JS_LISTAR = """
+() => Array.from(document.querySelectorAll('tr[ng-repeat*="sknDataProviderFiltered"]'))
+    .map((row, i) => ({
+        i,
+        cells: Array.from(row.querySelectorAll('td[ng-repeat*="Column in ::Columns"]'))
+            .filter(td => !(td.className || '').includes('ng-hide'))
+            .map(td => (td.textContent || '').trim()),
+    }))
+"""
+
+JS_PAGAMENTOS = """
+() => Array.from(document.querySelectorAll('tr[ng-repeat*="RS_PAGAMENTOS"]'))
+    .map(row => Array.from(row.querySelectorAll('td')).map(td => {
+        const inp = td.querySelector(
+            'input[ng-model*="CC078_VL_VNDPOS"], '
+            + 'input[ng-model*="CC078_VL_VNDTEF"], '
+            + 'input[ng-model*="CC078_IT_QTPAGAME"]'
+        );
+        return inp ? (inp.value || '').trim() : (td.textContent || '').trim();
+    }))
+"""
+
+JS_DINHEIRO = """
+() => Array.from(document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]'))
+    .map(row => {
+        const td = row.querySelector('td');
+        const span = row.querySelector('span[ng-bind*="CC077_VL_CALC"]');
+        return {
+            forma: td ? (td.textContent || '').trim() : '',
+            valor: span ? (span.textContent || '').trim() : '',
+        };
+    })
+"""
+
+JS_SHELL_CONCILIADOR = """
+() => !!document.querySelector('#inputPassword')
+    || !!document.querySelector('tr[ng-repeat*="sknDataProviderFiltered"]')
+    || Array.from(document.querySelectorAll('a'))
+        .some(a => a.textContent.trim() === 'Mostrar todos')
+"""
+
+JS_MENU_DESCONTO = """
+() => !!document.querySelector('.selectize-control')
+    || Array.from(document.querySelectorAll('a'))
+        .some(a => a.textContent.includes('desconto'))
+"""
+
+JS_MOSTRAR_TODOS = """
+() => {
+    const el = Array.from(document.querySelectorAll('a'))
+        .find(a => a.textContent.trim() === 'Mostrar todos');
+    if (!el) return false;
+    el.click();
+    return true;
+}
+"""
+
+JS_LOGIN_OK = "() => !document.querySelector('#inputPassword')"
+
+JS_CONCILIADOR_LINHAS = """
+() => {
+    const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="sknDataProviderFiltered"]'));
+    if (!rows.length) return false;
+    return rows.every(row => {
+        const cells = row.querySelectorAll('td[ng-repeat*="Column in ::Columns"]');
+        if (cells.length < 7) return false;
+        return Array.from(cells).some(td => (td.textContent || '').trim().length > 0);
+    });
+}
+"""
+
+JS_DETALHE_PRONTO = """
+() => {
+    const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]'));
+    if (!rows.length) return false;
+    return rows.every(row => (row.textContent || '').trim().length > 0);
+}
+"""
+
+JS_DINHEIRO_PRONTO = """
+() => {
+    const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]'));
+    return rows.length > 0 && rows.every(row => (row.textContent || '').trim().length > 0);
+}
+"""
+
+JS_CONTAR_FORMAS = """() => document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]').length"""
+
+JS_CONTAR_PAGAMENTOS = """() => document.querySelectorAll('tr[ng-repeat*="RS_PAGAMENTOS"]').length"""
+
+JS_CONCILIACAO_PRONTA = """
+() => {
+    const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="RS_PAGAMENTOS"]'));
+    if (!rows.length) return false;
+    return rows.every(row => row.querySelectorAll('td').length >= 8);
+}
+"""
+
+JS_CLICAR_MENU = """
+(nome) => {
+    const links = Array.from(document.querySelectorAll('a'));
+    let el = links.find(a => a.textContent.trim() === nome);
+    if (!el) el = links.find(a => a.textContent.includes(nome));
+    if (el) { el.click(); return true; }
+    return false;
+}
+"""
+
+
+def _url_login(url: str) -> bool:
+    return "login" in str(url or "").lower()
+
+
+async def tem_form_login(page) -> bool:
+    """True quando a tela de login está visível (SPA pode não mudar a URL)."""
+    try:
+        return await page.locator("#inputPassword").count() > 0
+    except Exception:
+        return False
+
+
+# ─── Operações de página ──────────────────────────────────────────
+
+async def esperar(page, expressao: str, timeout_ms: int = TIMEOUT_PADRAO_MS, etapa: str = "etapa") -> None:
+    """Espera um sinal de dado (JS) em vez de tempo fixo."""
+    from playwright.async_api import TimeoutError as PWTimeoutError
+
+    inicio = time.perf_counter()
+    try:
+        await page.wait_for_function(expressao, timeout=timeout_ms)
+    except PWTimeoutError as exc:
+        logger.warning("[automacao] timeout (%sms) esperando %s", timeout_ms, etapa)
+        raise TimeoutError(f"Timeout esperando {etapa}.") from exc
+    _marcar(etapa, inicio)
+
+
+async def login(page, usuario: str, senha: str) -> bool:
+    """Login no Cloudfy. Reaproveita a sessão se já estiver autenticada."""
+    inicio = time.perf_counter()
+    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+    try:
+        await page.wait_for_selector("#loginControllerLoginId", timeout=TIMEOUT_CURTO_MS)
+    except Exception:
+        if not _url_login(page.url):
+            _marcar("login.reaproveitado", inicio)
+            return True
+        raise
+
+    await page.fill("#loginControllerLoginId", usuario)
+    await page.fill("#inputPassword", senha)
+    await page.press("#inputPassword", "Enter")
+    try:
+        await esperar(page, JS_LOGIN_OK, 20000, "login")
+    except TimeoutError as exc:
+        raise RuntimeError(
+            "Login no Cloudfy nao concluiu. Verifique usuario/senha nas configuracoes."
+        ) from exc
+    return True
+
+
+async def navegar_conciliador(page, usuario: str, senha: str) -> None:
+    inicio = time.perf_counter()
+
+    async def _abrir() -> None:
         await page.goto(CONCILIADOR_URL, wait_until="domcontentloaded")
-        await page.wait_for_timeout(4000)
         try:
-            await page.wait_for_selector(
-                'tr[ng-repeat*="sknDataProviderFiltered"]', timeout=20000
-            )
+            await page.wait_for_function(JS_SHELL_CONCILIADOR, timeout=TIMEOUT_PADRAO_MS)
         except Exception:
-            pass
-        await page.wait_for_timeout(2000)
-
-        await page.evaluate("""
-            const el = Array.from(document.querySelectorAll('a'))
-                .find(a => a.textContent.trim() === 'Mostrar todos');
-            if (el) el.click();
-        """)
-        await page.wait_for_timeout(3000)
-        try:
-            await page.wait_for_selector(
-                'tr[ng-repeat*="sknDataProviderFiltered"]', timeout=20000
-            )
-        except Exception:
-            pass
-        await page.wait_for_timeout(1000)
-        print("[OK] Conciliador carregado.")
-
-    async def listar_caixas(self, apenas_fechado: bool = True) -> list[CaixaResumo]:
-        page = self._page
-        rows = page.locator('tr[ng-repeat*="sknDataProviderFiltered"]')
-        count = await rows.count()
-        caixas: list[CaixaResumo] = []
-
-        for i in range(count):
-            row = rows.nth(i)
-            cells = row.locator('td[ng-repeat*="Column in ::Columns"]')
-            cell_count = await cells.count()
-            texts: list[str] = []
-            for j in range(cell_count):
-                cell = cells.nth(j)
-                class_attr = (await cell.get_attribute("class")) or ""
-                if "ng-hide" in class_attr:
-                    continue
-                text = (await cell.text_content() or "").strip()
-                texts.append(text)
-
-            if not texts or len(texts) < 4:
-                continue
-
-            caixa = CaixaResumo(
-                data=texts[0] if len(texts) > 0 else "",
-                pdv=texts[1] if len(texts) > 1 else "",
-                turno=texts[2] if len(texts) > 2 else "",
-                horario_abertura=texts[3] if len(texts) > 3 else "",
-                horario_fechamento=texts[4] if len(texts) > 4 else "",
-                movto=texts[5] if len(texts) > 5 else "",
-                status=texts[6] if len(texts) > 6 else "",
-                valor=texts[9] if len(texts) > 9 else "",
-                row_index=i,
-            )
-            caixas.append(caixa)
-
-        if apenas_fechado:
-            caixas = [c for c in caixas if c.status.lower() == "fechado"]
-
-        print(f"[OK] {len(caixas)} caixas encontradas.")
-        return caixas
-
-    async def abrir_detalhes(self, caixa: CaixaResumo) -> CaixaDetalhe:
-        page = self._page
-        context = self._context
-
-        row = page.locator('tr[ng-repeat*="sknDataProviderFiltered"]').nth(
-            caixa.row_index
-        )
-        btn = row.locator("td .material-icons").last
-        await btn.click()
-        await page.wait_for_timeout(3000)
-
-        pages = context.pages
-        if len(pages) < 2:
-            await page.wait_for_timeout(4000)
-            pages = context.pages
-
-        detalhe_page = pages[-1] if len(pages) >= 2 else page
-        await detalhe_page.wait_for_load_state("domcontentloaded")
-        await detalhe_page.wait_for_timeout(4000)
-
-        dinheiro = await self._extrair_dinheiro(detalhe_page)
-        pagamentos = await self._extrair_pagamentos(detalhe_page, context)
-
-        if detalhe_page != page:
-            await detalhe_page.close()
-
-        return CaixaDetalhe(resumo=caixa, dinheiro=dinheiro, pagamentos=pagamentos)
-
-    async def _extrair_dinheiro(self, page) -> str:
-        try:
-            await page.wait_for_selector(
-                'tr[ng-repeat*="RS_FORMASPAGTO"]', timeout=15000
-            )
-        except Exception:
-            pass
-        await page.wait_for_timeout(2000)
-
-        # Estrategia 1: JS direto
-        try:
-            valor = await page.evaluate("""
-                const rows = document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]');
-                for (const row of rows) {
-                    const td = row.querySelector('td');
-                    if (td && td.textContent.trim().toUpperCase() === 'DINHEIRO') {
-                        const span = row.querySelector('span[ng-bind*="CC077_VL_CALC"]');
-                        if (span) return span.textContent.trim();
-                    }
-                }
-                return '';
-            """)
-            if valor:
-                return valor.strip()
-        except Exception:
-            pass
-
-        # Estrategia 2: Playwright locator (fallback)
-        try:
-            rows = page.locator('tr[ng-repeat*="RS_FORMASPAGTO"]')
-            count = await rows.count()
-            for i in range(count):
-                row = rows.nth(i)
-                first_td = row.locator("td").first
-                text = (await first_td.text_content() or "").strip()
-                if text.upper() == "DINHEIRO":
-                    span = row.locator('span[ng-bind*="CC077_VL_CALC"]')
-                    if await span.count() > 0:
-                        valor = (await span.first.text_content() or "").strip()
-                        if valor:
-                            return valor
-        except Exception:
-            pass
-
-        return ""
-
-    async def _extrair_pagamentos(self, page, context) -> list[PagamentoCartao]:
-        btn = page.locator('a:has-text("Conciliar cart")')
-        if await btn.count() == 0:
-            print("[AVISO] Botao 'Conciliar cartoes' nao encontrado.")
-            return []
-
-        await btn.first.click()
-        await page.wait_for_timeout(3000)
-
-        pages = context.pages
-        if len(pages) < 3:
-            await page.wait_for_timeout(4000)
-            pages = context.pages
-
-        conciliacao_page = pages[-1]
-        await conciliacao_page.wait_for_load_state("domcontentloaded")
-        await conciliacao_page.wait_for_timeout(4000)
-
-        pagamentos = await self._parse_tabela_pagamentos(conciliacao_page)
-
-        if conciliacao_page != page:
-            await conciliacao_page.close()
-
-        return pagamentos
-
-    async def _parse_tabela_pagamentos(self, page) -> list[PagamentoCartao]:
-        rows = page.locator('tr[ng-repeat*="RS_PAGAMENTOS"]')
-        count = await rows.count()
-        pagamentos: list[PagamentoCartao] = []
-
-        for i in range(count):
-            row = rows.nth(i)
-            tds = row.locator("td")
-            td_count = await tds.count()
-
-            texts: list[str] = []
-            for j in range(td_count):
-                td = tds.nth(j)
-                inp = td.locator(
-                    'input[ng-model*="CC078_VL_VNDPOS"], '
-                    'input[ng-model*="CC078_VL_VNDTEF"], '
-                    'input[ng-model*="CC078_IT_QTPAGAME"]'
-                )
-                if await inp.count() > 0:
-                    val = await inp.first.input_value()
-                    texts.append(val.strip())
-                else:
-                    txt = (await td.text_content() or "").strip()
-                    texts.append(txt)
-
-            if len(texts) >= 4:
-                pg = PagamentoCartao(
-                    tipo=texts[0] if len(texts) > 0 else "",
-                    bandeira=texts[1] if len(texts) > 1 else "",
-                    subtipo=texts[2] if len(texts) > 2 else "",
-                    valor_vndpos=texts[4] if len(texts) > 4 else "",
-                    valor_vndtef=texts[5] if len(texts) > 5 else "",
-                    valor_total=texts[6] if len(texts) > 6 else "",
-                    quantidade=texts[7] if len(texts) > 7 else "",
-                )
-                pagamentos.append(pg)
-
-        print(f"[OK] {len(pagamentos)} pagamentos extraidos.")
-        return pagamentos
-
-    # ── Lançar (sistema → Cloudfy) ────────────────────────────
-
-    async def _lancar_dinheiro(self, page, valor: str) -> None:
-        """Preenche o input de dinheiro na linha DINHEIRO da tabela RS_FORMASPAGTO."""
-        rows = page.locator('tr[ng-repeat*="RS_FORMASPAGTO"]')
-        count = await rows.count()
-        for i in range(count):
-            row = rows.nth(i)
-            first_td = row.locator("td").first
-            text = (await first_td.text_content() or "").strip()
-            if text.upper() == "DINHEIRO":
-                inp = row.locator('input[ng-model*="CC077_VL_CONCI"]')
-                if await inp.count() > 0:
-                    await inp.first.fill(valor)
-                    await page.wait_for_timeout(300)
-                    print(f"[OK] Dinheiro lancado: {valor}")
-                    return
-        print("[AVISO] Input de dinheiro nao encontrado.")
-
-    async def _abrir_conciliacao(self, page, context):
-        """Clica 'Conciliar cartoes' e retorna a pagina de conciliacao."""
-        btn = page.locator('a:has-text("Conciliar cart")')
-        if await btn.count() == 0:
-            print("[AVISO] Botao 'Conciliar cartoes' nao encontrado.")
-            return None
-
-        await btn.first.click()
-        await page.wait_for_timeout(3000)
-
-        pages = context.pages
-        if len(pages) < 3:
-            await page.wait_for_timeout(4000)
-            pages = context.pages
-
-        conciliacao_page = pages[-1]
-        await conciliacao_page.wait_for_load_state("domcontentloaded")
-        await conciliacao_page.wait_for_timeout(4000)
-        return conciliacao_page
-
-    async def _lancar_pagamentos(
-        self, page, mapeamento: dict, categorias: dict
-    ) -> None:
-        """Preenche inputs da conciliacao com valores reais do sistema."""
-        rows = page.locator('tr[ng-repeat*="RS_PAGAMENTOS"]')
-        count = await rows.count()
-
-        for i in range(count):
-            row = rows.nth(i)
-            tds = row.locator("td")
-
-            # Extrai o subtipo (3a coluna)
-            subtipo = ""
-            if await tds.count() > 2:
-                subtipo = (await tds.nth(2).text_content() or "").strip()
-
-            if not subtipo:
-                continue
-
-            # Busca categoria do sistema via mapeamento
-            cat_key = mapeamento.get(subtipo, "")
-            if not cat_key or cat_key not in categorias:
-                continue
-
-            real_val = categorias[cat_key].get("real", 0)
-            if not real_val:
-                continue
-
-            valor_str = str(real_val).replace(".", ",")
-
-            # Preenche VNDPOS (coluna 5, index 4)
-            inp = row.locator('input[ng-model*="CC078_VL_VNDPOS"]')
-            if await inp.count() > 0:
-                await inp.first.fill(valor_str)
-                await page.wait_for_timeout(200)
-
-            print(f"[OK] Lancado {subtipo} -> {cat_key}: {valor_str}")
-
-    async def _confirmar_conciliacao(self, page) -> None:
-        """Clica no botao Confirmar na pagina de conciliacao."""
-        btn = page.locator('a:has-text("Confirmar")')
-        if await btn.count() > 0:
-            await btn.first.click()
-            await page.wait_for_timeout(1000)
-            print("[OK] Confirmar clicado.")
-
-    async def executar_lancamento(
-        self,
-        caixa_idx: int,
-        dinheiro_valor: str,
-        mapeamento: dict,
-        categorias: dict,
-    ) -> dict[str, Any]:
-        ok = await self.login()
-        if not ok:
-            return {"erro": "Falha no login."}
-
-        await self.navegar_conciliador()
-        caixas = await self.listar_caixas()
-
-        if caixa_idx < 0 or caixa_idx >= len(caixas):
-            return {"erro": f"Indice invalido. {len(caixas)} disponiveis."}
-
-        selecionado = caixas[caixa_idx]
-        page = self._page
-        context = self._context
-
-        # Abre detalhes do caixa
-        row = page.locator('tr[ng-repeat*="sknDataProviderFiltered"]').nth(
-            selecionado.row_index
-        )
-        btn = row.locator("td .material-icons").last
-        await btn.click()
-        await page.wait_for_timeout(3000)
-
-        pages = context.pages
-        if len(pages) < 2:
-            await page.wait_for_timeout(4000)
-            pages = context.pages
-
-        detalhe_page = pages[-1] if len(pages) >= 2 else page
-        await detalhe_page.wait_for_load_state("domcontentloaded")
-        await detalhe_page.wait_for_timeout(4000)
-
-        # 1. Lancar dinheiro
-        await self._lancar_dinheiro(detalhe_page, dinheiro_valor)
-
-        # 2. Abrir conciliacao e lancar pagamentos
-        conciliacao_page = await self._abrir_conciliacao(detalhe_page, context)
-        if conciliacao_page:
-            await self._lancar_pagamentos(conciliacao_page, mapeamento, categorias)
-            await self._confirmar_conciliacao(conciliacao_page)
-            # NAO fecha a pagina — usuario precisa ver
-        else:
-            # Se nao tem conciliacao, fecha detalhe
-            if detalhe_page != page:
-                await detalhe_page.close()
-
-        print("[OK] Lancamento concluido. Navegador permanece aberto para acao do usuario.")
-        self._keep_open = True
-        return {"ok": True, "mensagem": "Lancamento concluido. Verifique e finalize manualmente no navegador."}
-
-    # ── Fluxo principal ────────────────────────────────────────
-
-    async def executar(
-        self, caixa_idx: int | None = None, apenas_listar: bool = False
-    ) -> dict[str, Any]:
-        ok = await self.login()
-        if not ok:
-            return {"erro": "Falha no login."}
-
-        await self.navegar_conciliador()
-        caixas = await self.listar_caixas()
-
-        if apenas_listar or caixa_idx is None:
-            return {
-                "total": len(caixas),
-                "caixas": [asdict(c) for c in caixas],
-            }
-
-        if caixa_idx < 0 or caixa_idx >= len(caixas):
-            return {
-                "erro": f"Indice invalido. {len(caixas)} disponiveis (0-{len(caixas)-1})."
-            }
-
-        selecionado = caixas[caixa_idx]
-        detalhe = await self.abrir_detalhes(selecionado)
-        return asdict(detalhe)
-
-    # ── Relatório de descontos (download) ──────────────────────
-
-    async def _abrir_relatorio_descontos(self, page) -> None:
-        await page.goto(f"{CLOUDY_BASE}/#/", wait_until="domcontentloaded")
-        await page.wait_for_timeout(3000)
-
-        clicou = await page.evaluate(
-            """
-            (nome) => {
-                const links = Array.from(document.querySelectorAll('a'));
-                let el = links.find(a => a.textContent.trim() === nome);
-                if (!el) el = links.find(a => a.textContent.includes(nome));
-                if (el) { el.click(); return true; }
-                return false;
-            }
-            """,
-            RELATORIO_DESCONTO_MENU,
-        )
-        if not clicou:
-            print("[AVISO] Menu 'Relatorio de desconto' nao encontrado.")
-        await page.wait_for_timeout(4000)
-
-    async def _selecionar_relatorio_por_cupom(self, page) -> None:
-        select = page.locator(".selectize-control .selectize-input")
-        if await select.count() == 0:
-            print("[AVISO] Select de tipo de relatorio nao encontrado.")
-            return
-        await select.first.click()
-        await page.wait_for_timeout(600)
-
-        opcao = page.locator(
-            f'.selectize-dropdown .option:has-text("{RELATORIO_POR_CUPOM}")'
-        )
-        if await opcao.count() == 0:
-            opcao = page.locator(".selectize-dropdown .option", has_text=RELATORIO_POR_CUPOM)
-        if await opcao.count() > 0:
-            await opcao.first.click()
-            await page.wait_for_timeout(1200)
-        else:
-            print("[AVISO] Opcao 'Relatorio por cupom' nao encontrada.")
-
-    async def baixar_relatorio_descontos(self) -> list[dict[str, Any]]:
-        page = self._page
-        context = self._context
-
-        ok = await self.login()
-        if not ok:
-            raise RuntimeError("Falha no login.")
-
-        await self._abrir_relatorio_descontos(page)
-
-        pages = context.pages
-        report_page = pages[-1] if pages else page
-        await report_page.wait_for_load_state("domcontentloaded")
-        await report_page.wait_for_timeout(3000)
-
-        await self._selecionar_relatorio_por_cupom(report_page)
-
-        botao = report_page.locator('a:has-text("Excel")')
-        if await botao.count() == 0:
-            raise RuntimeError("Botao de exportacao Excel nao encontrado.")
-
-        tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
-        tmp_path = tmp.name
-        tmp.close()
-
-        try:
-            async with report_page.expect_download(timeout=90000) as download_info:
-                await botao.first.click()
-            download = await download_info.value
-            await download.save_as(tmp_path)
-            descontos = parse_descontos_xlsx(tmp_path)
-            print(f"[OK] {len(descontos)} cupons 'Venda a prazo' extraidos.")
-            return descontos
-        finally:
+            logger.warning("[automacao] shell do conciliador nao apareceu a tempo")
+
+    await _abrir()
+
+    if _url_login(page.url) or await tem_form_login(page):
+        await login(page, usuario, senha)
+        await _abrir()
+
+    try:
+        await page.evaluate(JS_MOSTRAR_TODOS)
+    except Exception:
+        pass
+
+    try:
+        await esperar(page, JS_CONCILIADOR_LINHAS, TIMEOUT_CURTO_MS, "conciliador.linhas")
+    except TimeoutError:
+        if await tem_form_login(page):
+            logger.info("[automacao] sessao expirou; refazendo login")
+            await login(page, usuario, senha)
+            await _abrir()
             try:
-                os.remove(tmp_path)
-            except OSError:
+                await page.evaluate(JS_MOSTRAR_TODOS)
+            except Exception:
                 pass
+            try:
+                await esperar(page, JS_CONCILIADOR_LINHAS, TIMEOUT_CURTO_MS, "conciliador.linhas")
+            except TimeoutError:
+                logger.info("[automacao] conciliador sem linhas visiveis (lista vazia?)")
+        else:
+            logger.info("[automacao] conciliador sem linhas visiveis (lista vazia?)")
+
+    _marcar("conciliador", inicio)
 
 
-# ─── API pública síncrona ──────────────────────────────────────────
+async def ler_caixas(page) -> list[CaixaResumo]:
+    inicio = time.perf_counter()
+    rows = await page.evaluate(JS_LISTAR)
+    caixas = [c for c in parse_caixas_rows(rows) if c.status.lower() == "fechado"]
+    _marcar("extrair.lista", inicio)
+    return caixas
 
 
-def listar_caixas_cloudfy(login: str, senha: str, debug: bool = False) -> dict:
+async def _abrir_popup(page, context, acao):
+    """Executa a ação e espera o popup; se não abrir, segue na mesma página."""
+    from playwright.async_api import TimeoutError as PWTimeoutError
+
+    try:
+        async with context.expect_page(timeout=TIMEOUT_POPUP_MS) as info:
+            await acao()
+        nova = await info.value
+    except PWTimeoutError:
+        logger.info("[automacao] popup nao abriu; seguindo na pagina atual")
+        return page
+
+    await nova.wait_for_load_state("domcontentloaded")
+    return nova
+
+
+async def extrair_dinheiro(page) -> str:
+    try:
+        await esperar(page, JS_DINHEIRO_PRONTO, TIMEOUT_CURTO_MS, "detalhe.dinheiro")
+    except TimeoutError:
+        pass
+    rows = await page.evaluate(JS_DINHEIRO)
+    return parse_dinheiro_rows(rows)
+
+
+async def extrair_pagamentos(page, context) -> list[PagamentoCartao]:
+    btn = page.locator('a:has-text("Conciliar cart")')
+    if await btn.count() == 0:
+        logger.warning("[automacao] botao 'Conciliar cartoes' nao encontrado")
+        return []
+
+    conciliacao = await _abrir_popup(page, context, btn.first.click)
+    try:
+        try:
+            await esperar(conciliacao, JS_CONCILIACAO_PRONTA, TIMEOUT_CURTO_MS, "conciliacao.pronta")
+        except TimeoutError:
+            if not await conciliacao.evaluate(JS_CONTAR_PAGAMENTOS):
+                logger.info("[automacao] conciliacao sem pagamentos de cartao")
+            else:
+                logger.warning("[automacao] conciliacao nao terminou de renderizar")
+        rows = await conciliacao.evaluate(JS_PAGAMENTOS)
+        return parse_pagamentos_rows(rows)
+    finally:
+        if conciliacao is not page:
+            await conciliacao.close()
+
+
+async def abrir_detalhes(page, context, caixa: CaixaResumo) -> CaixaDetalhe:
+    inicio = time.perf_counter()
+    row = page.locator('tr[ng-repeat*="sknDataProviderFiltered"]').nth(caixa.row_index)
+    botao = row.locator("td .material-icons").last
+    detalhe = await _abrir_popup(page, context, botao.click)
+    try:
+        try:
+            await esperar(detalhe, JS_DETALHE_PRONTO, TIMEOUT_CURTO_MS, "detalhe.pronto")
+        except TimeoutError:
+            if not await detalhe.evaluate(JS_CONTAR_FORMAS):
+                raise RuntimeError(
+                    "Tabela de formas de pagamento do caixa nao carregou. "
+                    "Tente importar novamente."
+                )
+            logger.warning("[automacao] detalhe do caixa sem linhas")
+        dinheiro = await extrair_dinheiro(detalhe)
+        pagamentos = await extrair_pagamentos(detalhe, context)
+        _marcar("extrair.detalhe", inicio)
+        return CaixaDetalhe(resumo=caixa, dinheiro=dinheiro, pagamentos=pagamentos)
+    finally:
+        if detalhe is not page:
+            await detalhe.close()
+
+
+async def _lancar_dinheiro(page, valor: str) -> bool:
+    try:
+        await esperar(page, JS_DINHEIRO_PRONTO, TIMEOUT_CURTO_MS, "lancar.dinheiro.pronto")
+    except TimeoutError:
+        if not await page.evaluate(JS_CONTAR_FORMAS):
+            raise RuntimeError(
+                "Tabela de formas de pagamento nao carregou; nada foi lancado."
+            )
+        logger.warning("[automacao] tabela de formas de pagamento sem conteudo")
+
+    idx = await page.evaluate("""
+        () => {
+            const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]'));
+            return rows.findIndex(row => {
+                const td = row.querySelector('td');
+                return td && td.textContent.trim().toUpperCase() === 'DINHEIRO';
+            });
+        }
+    """)
+    if not isinstance(idx, int) or idx < 0:
+        raise RuntimeError("Linha DINHEIRO nao encontrada; nada foi lancado.")
+
+    inp = page.locator('tr[ng-repeat*="RS_FORMASPAGTO"]').nth(idx).locator(
+        'input[ng-model*="CC077_VL_CONCI"]'
+    )
+    if await inp.count() == 0:
+        raise RuntimeError("Campo de conciliacao do DINHEIRO nao encontrado; nada foi lancado.")
+
+    await inp.first.fill(valor)
+    logger.info("[automacao] dinheiro lancado: %s", valor)
+    return True
+
+
+async def _abrir_conciliacao(page, context):
+    btn = page.locator('a:has-text("Conciliar cart")')
+    if await btn.count() == 0:
+        logger.warning("[automacao] botao 'Conciliar cartoes' nao encontrado")
+        return None
+    conciliacao = await _abrir_popup(page, context, btn.first.click)
+    try:
+        await esperar(conciliacao, JS_CONCILIACAO_PRONTA, TIMEOUT_PADRAO_MS, "conciliacao.pronta")
+    except TimeoutError:
+        logger.warning("[automacao] conciliacao sem linhas de pagamento")
+    return conciliacao
+
+
+async def _lancar_pagamentos(page, mapeamento: dict, categorias: dict) -> int:
+    subtipos = await page.evaluate("""
+        () => Array.from(document.querySelectorAll('tr[ng-repeat*="RS_PAGAMENTOS"]')).map((row, i) => {
+            const tds = row.querySelectorAll('td');
+            return { i, subtipo: tds.length > 2 ? (tds[2].textContent || '').trim() : '' };
+        })
+    """)
+    rows = page.locator('tr[ng-repeat*="RS_PAGAMENTOS"]')
+    lancados = 0
+    for item in subtipos or []:
+        subtipo = _norm(item.get("subtipo"))
+        if not subtipo:
+            continue
+        cat_key = mapeamento.get(subtipo, "")
+        if not cat_key or cat_key not in categorias:
+            continue
+        real_val = categorias[cat_key].get("real", 0)
+        if not real_val:
+            continue
+        valor_str = str(real_val).replace(".", ",")
+        inp = rows.nth(int(item.get("i", 0))).locator('input[ng-model*="CC078_VL_VNDPOS"]')
+        if await inp.count() == 0:
+            continue
+        await inp.first.fill(valor_str)
+        lancados += 1
+        logger.info("[automacao] lancado %s -> %s: %s", subtipo, cat_key, valor_str)
+    return lancados
+
+
+async def _confirmar_conciliacao(page) -> bool:
+    btn = page.locator('a:has-text("Confirmar")')
+    if await btn.count() == 0:
+        logger.warning("[automacao] botao Confirmar nao encontrado")
+        return False
+    await btn.first.click()
+    logger.info("[automacao] Confirmar clicado")
+    return True
+
+
+async def executar_lancamento(
+    page,
+    context,
+    caixa: CaixaResumo,
+    dinheiro_valor: str,
+    mapeamento: dict,
+    categorias: dict,
+) -> dict[str, Any]:
+    """Preenche dinheiro + pagamentos. Deixa as páginas abertas."""
+    row = page.locator('tr[ng-repeat*="sknDataProviderFiltered"]').nth(caixa.row_index)
+    botao = row.locator("td .material-icons").last
+    detalhe = await _abrir_popup(page, context, botao.click)
+    if detalhe is not page:
+        try:
+            await esperar(detalhe, JS_DETALHE_PRONTO, TIMEOUT_CURTO_MS, "lancar.detalhe")
+        except TimeoutError:
+            if not await detalhe.evaluate(JS_CONTAR_FORMAS):
+                raise RuntimeError(
+                    "Tabela de formas de pagamento nao carregou; nada foi lancado."
+                )
+            logger.warning("[automacao] detalhe do lancamento sem linhas")
+
+    await _lancar_dinheiro(detalhe, dinheiro_valor)
+    conciliacao = await _abrir_conciliacao(detalhe, context)
+    if conciliacao:
+        await _lancar_pagamentos(conciliacao, mapeamento, categorias)
+        await _confirmar_conciliacao(conciliacao)
+    else:
+        logger.warning("[automacao] sem conciliacao de cartoes para lancar")
+
+    return {
+        "ok": True,
+        "mensagem": "Lancamento concluido. Verifique e finalize manualmente no navegador.",
+    }
+
+
+async def abrir_relatorio_descontos(page, context, usuario: str, senha: str):
+    inicio = time.perf_counter()
+    await page.goto(HOME_URL, wait_until="domcontentloaded")
+    if _url_login(page.url) or await tem_form_login(page):
+        await login(page, usuario, senha)
+
+    clicou = await page.evaluate(JS_CLICAR_MENU, RELATORIO_DESCONTO_MENU)
+    if not clicou:
+        try:
+            await page.wait_for_function(JS_MENU_DESCONTO, timeout=TIMEOUT_CURTO_MS)
+        except Exception:
+            pass
+        clicou = await page.evaluate(JS_CLICAR_MENU, RELATORIO_DESCONTO_MENU)
+    if not clicou:
+        logger.warning("[automacao] menu 'Relatorio de desconto' nao encontrado")
+        raise RuntimeError("Menu 'Relatorio de desconto' nao encontrado no Cloudfy.")
+
+    alvo = page
+    if len(context.pages) > 1:
+        alvo = context.pages[-1]
+
+    try:
+        await alvo.wait_for_selector(".selectize-control .selectize-input", timeout=TIMEOUT_PADRAO_MS)
+    except Exception:
+        logger.warning("[automacao] select de tipo de relatorio nao apareceu")
+        raise RuntimeError("Tela do relatorio de descontos nao carregou.")
+
+    await _selecionar_relatorio_por_cupom(alvo)
+    _marcar("descontos.tela", inicio)
+    return alvo
+
+
+async def _selecionar_relatorio_por_cupom(page) -> None:
+    select = page.locator(".selectize-control .selectize-input")
+    await select.first.click()
+    opcao = page.locator(".selectize-dropdown .option", has_text=RELATORIO_POR_CUPOM)
+    try:
+        await opcao.first.wait_for(timeout=TIMEOUT_CURTO_MS)
+        await opcao.first.click()
+    except Exception:
+        logger.warning("[automacao] opcao 'Relatorio por cupom' nao encontrada")
+
+
+async def baixar_relatorio_descontos(page, usuario: str, senha: str) -> list[dict[str, Any]]:
+    context = page.context
+    inicio = time.perf_counter()
+    alvo = await abrir_relatorio_descontos(page, context, usuario, senha)
+
+    botao = alvo.locator('a:has-text("Excel")')
+    try:
+        await botao.first.wait_for(timeout=TIMEOUT_PADRAO_MS)
+    except Exception as exc:
+        raise RuntimeError("Botao de exportacao Excel nao encontrado.") from exc
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+
+    try:
+        async with alvo.expect_download(timeout=90000) as download_info:
+            await botao.first.click()
+        download = await download_info.value
+        await download.save_as(tmp_path)
+        descontos = parse_descontos_xlsx(tmp_path)
+        _marcar("descontos.download", inicio)
+        return descontos
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+# ─── API pública síncrona (delega para a sessão) ──────────────────
+
+def _sessao():
+    from app.modules.conciliador.automacao_sessao import SESSAO
+    return SESSAO
+
+
+def listar_caixas_cloudfy(login: str, senha: str, debug: bool = False, otimizar: bool = True) -> dict:
     """Lista caixas com status 'Fechado' no Cloudfy. Bloqueante."""
-    return _run_async(login, senha, debug, apenas_listar=True)
+    return _sessao().listar(login, senha, debug=debug, otimizar=otimizar)
 
 
 def importar_caixa_cloudfy(
-    login: str, senha: str, caixa_idx: int, debug: bool = False
+    login: str,
+    senha: str,
+    caixa_idx: int,
+    debug: bool = False,
+    otimizar: bool = True,
 ) -> dict:
     """Extrai detalhes de um caixa especifico do Cloudfy. Bloqueante."""
-    return _run_async(login, senha, debug, caixa_idx=caixa_idx)
+    return _sessao().importar_por_indice(login, senha, caixa_idx, debug=debug, otimizar=otimizar)
+
+
+def importar_caixas_cloudfy(
+    login: str,
+    senha: str,
+    chaves: list[dict],
+    data_iso: str | None = None,
+    debug: bool = False,
+    otimizar: bool = True,
+) -> dict:
+    """Extrai detalhes de varios caixas numa unica rodada. Bloqueante."""
+    return _sessao().importar(login, senha, chaves, data_iso, debug=debug, otimizar=otimizar)
 
 
 def lancar_caixa_cloudfy(
     login: str,
     senha: str,
-    caixa_idx: int,
+    caixa_idx: int | None,
     dinheiro_valor: str,
     mapeamento: dict,
     categorias: dict,
+    caixa: dict | None = None,
+    data_iso: str | None = None,
+    debug: bool = False,
+    otimizar: bool = True,
 ) -> dict:
     """Lanca valores do sistema no Cloudfy. Sempre com navegador visivel.
     Navegador permanece aberto apos o lancamento."""
-
-    async def _runner():
-        from playwright.async_api import async_playwright
-
-        pw = await async_playwright().start()
-        try:
-            browser = await pw.chromium.launch(
-                channel="chrome", headless=False
-            )
-        except Exception:
-            browser = await pw.chromium.launch(headless=False)
-
-        context = await browser.new_context()
-        page = await context.new_page()
-
-        scraper = CloudfyScraper(login, senha, debug=True)
-        scraper._browser = browser
-        scraper._context = context
-        scraper._page = page
-        scraper._keep_open = True
-
-        try:
-            return await scraper.executar_lancamento(
-                caixa_idx=caixa_idx,
-                dinheiro_valor=dinheiro_valor,
-                mapeamento=mapeamento,
-                categorias=categorias,
-            )
-        except Exception as exc:
-            return {"erro": str(exc)}
-
-    try:
-        return asyncio.run(_runner())
-    except Exception as exc:
-        return {"erro": str(exc)}
+    return _sessao().lancar(
+        login,
+        senha,
+        caixa_idx=caixa_idx,
+        dinheiro_valor=dinheiro_valor,
+        mapeamento=mapeamento,
+        categorias=categorias,
+        caixa=caixa,
+        data_iso=data_iso,
+        debug=debug,
+        otimizar=otimizar,
+    )
 
 
-def baixar_descontos_cloudfy(login: str, senha: str, debug: bool = False) -> dict:
-    """Baixa o relatorio de descontos (por cupom) do Cloudfy e retorna os
-    cupons do tipo 'Venda a prazo'. Bloqueante."""
-
-    async def _runner():
-        async with CloudfyScraper(login, senha, debug=debug) as scraper:
-            descontos = await scraper.baixar_relatorio_descontos()
-            return {"descontos": descontos, "total": len(descontos)}
-
-    try:
-        return asyncio.run(_runner())
-    except Exception as exc:
-        return {"erro": str(exc)}
-
-
-def _run_async(
-    login: str,
-    senha: str,
-    debug: bool = False,
-    caixa_idx: int | None = None,
-    apenas_listar: bool = False,
-) -> dict:
-    async def _runner():
-        async with CloudfyScraper(login, senha, debug=debug) as scraper:
-            return await scraper.executar(caixa_idx=caixa_idx, apenas_listar=apenas_listar)
-
-    try:
-        return asyncio.run(_runner())
-    except Exception as exc:
-        return {"erro": str(exc)}
+def baixar_descontos_cloudfy(login: str, senha: str, debug: bool = False, otimizar: bool = True) -> dict:
+    """Baixa o relatorio de descontos (por cupom) e filtra 'Venda a prazo'."""
+    return _sessao().descontos(login, senha, debug=debug, otimizar=otimizar)
