@@ -434,6 +434,7 @@ class AutomacaoSession:
                         "ok": True,
                         "caixa": asdict(caixa),
                         "dinheiro": detalhe.dinheiro,
+                        "cheque": detalhe.cheque,
                         "pagamentos": [asdict(p) for p in detalhe.pagamentos],
                         "tempo_ms": int(round((time.perf_counter() - inicio) * 1000)),
                     })
@@ -505,6 +506,7 @@ class AutomacaoSession:
         senha: str,
         caixa_idx: int | None = None,
         dinheiro_valor: str = "0",
+        cheque_valor: str = "0",
         mapeamento: dict | None = None,
         categorias: dict | None = None,
         caixa: dict | None = None,
@@ -545,6 +547,7 @@ class AutomacaoSession:
                 str(dinheiro_valor),
                 mapeamento or {},
                 categorias or {},
+                str(cheque_valor),
             )
             self._headed_lancar = True
             self._set_state("headed", "Janela do lancamento aberta")

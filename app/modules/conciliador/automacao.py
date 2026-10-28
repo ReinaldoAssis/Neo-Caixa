@@ -71,6 +71,7 @@ class PagamentoCartao:
 class CaixaDetalhe:
     resumo: CaixaResumo = field(default_factory=CaixaResumo)
     dinheiro: str = ""
+    cheque: str = ""
     pagamentos: list[PagamentoCartao] = field(default_factory=list)
 
 
@@ -360,12 +361,24 @@ def parse_pagamentos_rows(rows: list[list[str]] | None) -> list[PagamentoCartao]
     return pagamentos
 
 
-def parse_dinheiro_rows(rows: list[dict] | None) -> str:
+def parse_formas_pagamento_rows(rows: list[dict] | None) -> dict[str, str]:
+    """Mapeia forma de pagamento (DINHEIRO, CHEQUE, ...) -> valor lido do site."""
+    valores: dict[str, str] = {}
     for item in rows or []:
         forma = _norm(item.get("forma")).upper()
-        if forma == "DINHEIRO":
-            return _norm(item.get("valor"))
-    return ""
+        if not forma or forma in valores:
+            continue
+        valores[forma] = _norm(item.get("valor"))
+    return valores
+
+
+def parse_dinheiro_rows(rows: list[dict] | None) -> str:
+    return parse_formas_pagamento_rows(rows).get("DINHEIRO", "")
+
+
+def parse_cheque_rows(rows: list[dict] | None) -> str:
+    """Le a linha CHEQUE do site, que no programa representa PIX CNPJ."""
+    return parse_formas_pagamento_rows(rows).get("CHEQUE", "")
 
 
 # ─── Timings ──────────────────────────────────────────────────────
@@ -423,6 +436,18 @@ JS_DINHEIRO = """
             valor: span ? (span.textContent || '').trim() : '',
         };
     })
+"""
+
+JS_INDEX_FORMA = """
+(forma) => {
+    const vis = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]'))
+        .filter(vis);
+    return rows.findIndex(row => {
+        const td = row.querySelector('td');
+        return td && td.textContent.trim().toUpperCase() === forma;
+    });
+}
 """
 
 JS_SHELL_CONCILIADOR = """
@@ -839,13 +864,14 @@ async def _abrir_pagina_ou_inline(
         await asyncio.gather(popup_task, return_exceptions=True)
 
 
-async def extrair_dinheiro(page) -> str:
+async def extrair_formas_pagamento(page) -> dict[str, str]:
+    """Le DINHEIRO e CHEQUE (PIX CNPJ) da tabela de formas de pagamento."""
     try:
-        await esperar(page, JS_DINHEIRO_PRONTO, TIMEOUT_CURTO_MS, "detalhe.dinheiro")
+        await esperar(page, JS_DINHEIRO_PRONTO, TIMEOUT_CURTO_MS, "detalhe.formas")
     except TimeoutError:
         pass
     rows = await page.evaluate(JS_DINHEIRO)
-    return parse_dinheiro_rows(rows)
+    return parse_formas_pagamento_rows(rows)
 
 
 async def extrair_pagamentos(page, context) -> list[PagamentoCartao]:
@@ -909,10 +935,15 @@ async def abrir_detalhes(page, context, caixa: CaixaResumo) -> CaixaDetalhe:
                     "Tente importar novamente."
                 )
             logger.warning("[automacao] detalhe do caixa sem linhas")
-        dinheiro = await extrair_dinheiro(detalhe)
+        formas = await extrair_formas_pagamento(detalhe)
         pagamentos = await extrair_pagamentos(detalhe, context)
         _marcar("extrair.detalhe", inicio)
-        return CaixaDetalhe(resumo=caixa, dinheiro=dinheiro, pagamentos=pagamentos)
+        return CaixaDetalhe(
+            resumo=caixa,
+            dinheiro=formas.get("DINHEIRO", ""),
+            cheque=formas.get("CHEQUE", ""),
+            pagamentos=pagamentos,
+        )
     finally:
         if detalhe is page:
             try:
@@ -926,9 +957,12 @@ async def abrir_detalhes(page, context, caixa: CaixaResumo) -> CaixaDetalhe:
                 pass
 
 
-async def _lancar_dinheiro(page, valor: str) -> bool:
+async def _lancar_formas_pagamento(
+    page, dinheiro_valor: str, cheque_valor: str = ""
+) -> bool:
+    """Preenche a conciliacao de DINHEIRO e de CHEQUE (PIX CNPJ no programa)."""
     try:
-        await esperar(page, JS_DINHEIRO_PRONTO, TIMEOUT_CURTO_MS, "lancar.dinheiro.pronto")
+        await esperar(page, JS_DINHEIRO_PRONTO, TIMEOUT_CURTO_MS, "lancar.formas.pronto")
     except TimeoutError:
         if not await page.evaluate(JS_CONTAR_FORMAS):
             raise RuntimeError(
@@ -936,28 +970,34 @@ async def _lancar_dinheiro(page, valor: str) -> bool:
             )
         logger.warning("[automacao] tabela de formas de pagamento sem conteudo")
 
-    idx = await page.evaluate("""
-        () => {
-            const vis = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-            const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="RS_FORMASPAGTO"]'))
-                .filter(vis);
-            return rows.findIndex(row => {
-                const td = row.querySelector('td');
-                return td && td.textContent.trim().toUpperCase() === 'DINHEIRO';
-            });
-        }
-    """)
-    if not isinstance(idx, int) or idx < 0:
-        raise RuntimeError("Linha DINHEIRO nao encontrada; nada foi lancado.")
+    alvos = [("DINHEIRO", dinheiro_valor, True)]
+    if parse_money(cheque_valor or 0):
+        alvos.append(("CHEQUE", cheque_valor, False))
 
-    inp = page.locator('tr[ng-repeat*="RS_FORMASPAGTO"]:visible').nth(idx).locator(
-        'input[ng-model*="CC077_VL_CONCI"]'
-    )
-    if await inp.count() == 0:
-        raise RuntimeError("Campo de conciliacao do DINHEIRO nao encontrado; nada foi lancado.")
+    for forma, valor, obrigatorio in alvos:
+        idx = await page.evaluate(JS_INDEX_FORMA, forma)
+        if not isinstance(idx, int) or idx < 0:
+            if obrigatorio:
+                raise RuntimeError(f"Linha {forma} nao encontrada; nada foi lancado.")
+            logger.warning("[automacao] linha %s nao encontrada; nada lancado nela", forma)
+            continue
 
-    await inp.first.fill(valor)
-    logger.info("[automacao] dinheiro lancado: %s", valor)
+        inp = page.locator('tr[ng-repeat*="RS_FORMASPAGTO"]:visible').nth(idx).locator(
+            'input[ng-model*="CC077_VL_CONCI"]'
+        )
+        if await inp.count() == 0:
+            if obrigatorio:
+                raise RuntimeError(
+                    f"Campo de conciliacao do {forma} nao encontrado; nada foi lancado."
+                )
+            logger.warning(
+                "[automacao] campo de conciliacao do %s nao encontrado; nada lancado",
+                forma,
+            )
+            continue
+
+        await inp.first.fill(valor)
+        logger.info("[automacao] %s lancado: %s", forma.lower(), valor)
     return True
 
 
@@ -1034,8 +1074,9 @@ async def executar_lancamento(
     dinheiro_valor: str,
     mapeamento: dict,
     categorias: dict,
+    cheque_valor: str = "",
 ) -> dict[str, Any]:
-    """Preenche dinheiro + pagamentos. Deixa as páginas abertas."""
+    """Preenche dinheiro + cheque (PIX CNPJ) + pagamentos. Deixa as páginas abertas."""
     row = page.locator('tr[ng-repeat*="sknDataProviderFiltered"]:visible').nth(
         caixa.row_index
     )
@@ -1057,7 +1098,7 @@ async def executar_lancamento(
             )
         logger.warning("[automacao] detalhe do lancamento sem linhas")
 
-    await _lancar_dinheiro(detalhe, dinheiro_valor)
+    await _lancar_formas_pagamento(detalhe, dinheiro_valor, cheque_valor)
     conciliacao = await _abrir_conciliacao(detalhe, context)
     if conciliacao:
         await _lancar_pagamentos(conciliacao, mapeamento, categorias)
@@ -1872,6 +1913,7 @@ def lancar_caixa_cloudfy(
     senha: str,
     caixa_idx: int | None,
     dinheiro_valor: str,
+    cheque_valor: str,
     mapeamento: dict,
     categorias: dict,
     caixa: dict | None = None,
@@ -1886,6 +1928,7 @@ def lancar_caixa_cloudfy(
         senha,
         caixa_idx=caixa_idx,
         dinheiro_valor=dinheiro_valor,
+        cheque_valor=cheque_valor,
         mapeamento=mapeamento,
         categorias=categorias,
         caixa=caixa,

@@ -51,7 +51,8 @@
   const restLabels: Record<string, string> = {
     PIX: "PIX", ELO_DEBITO: "ELO DEBITO", MAESTRO: "MAESTRO",
     VC_ELECTRON: "VC ELECTRON", AMEX: "AMEX", ELO_CR: "ELO CR",
-    MASTERCARD: "MASTERCARD", VISA: "VISA", DINHEIRO: "DINHEIRO",
+    MASTERCARD: "MASTERCARD", VISA: "VISA", PIX_CNPJ: "PIX CNPJ",
+    DINHEIRO: "DINHEIRO",
   };
   const restCategories = Object.keys(restLabels);
 

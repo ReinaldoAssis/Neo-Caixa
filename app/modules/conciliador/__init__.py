@@ -753,6 +753,7 @@ async def automacao_lancar(data: dict):
         raise HTTPException(status_code=400, detail="Credenciais Cloudfy nao configuradas.")
 
     dinheiro_valor = str(data.get("dinheiro_valor", "0")).replace(".", ",")
+    cheque_valor = str(data.get("cheque_valor", "0")).replace(".", ",")
     mapeamento = data.get("mapeamento", {})
     categorias = data.get("categorias", {})
     data_iso = data.get("data")
@@ -766,6 +767,7 @@ async def automacao_lancar(data: dict):
             senha,
             int(caixa_idx) if caixa_idx is not None else None,
             dinheiro_valor,
+            cheque_valor,
             mapeamento,
             categorias,
             caixa if isinstance(caixa, dict) else None,

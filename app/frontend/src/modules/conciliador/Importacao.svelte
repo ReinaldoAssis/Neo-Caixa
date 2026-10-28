@@ -100,18 +100,22 @@
 
   const restCategories = [
     "PIX", "ELO_DEBITO", "MAESTRO", "VC_ELECTRON", "AMEX",
-    "ELO_CR", "MASTERCARD", "VISA", "DINHEIRO",
+    "ELO_CR", "MASTERCARD", "VISA", "PIX_CNPJ", "DINHEIRO",
   ];
   const restLabels: Record<string, string> = {
     PIX: "PIX", ELO_DEBITO: "ELO DEBITO", MAESTRO: "MAESTRO",
     VC_ELECTRON: "VC ELECTRON", AMEX: "AMEX", ELO_CR: "ELO CR",
-    MASTERCARD: "MASTERCARD", VISA: "VISA", DINHEIRO: "DINHEIRO",
+    MASTERCARD: "MASTERCARD", VISA: "VISA", PIX_CNPJ: "PIX CNPJ",
+    DINHEIRO: "DINHEIRO",
   };
   const restClassif: Record<string, string> = {
     PIX: "DEBITO", ELO_DEBITO: "DEBITO", MAESTRO: "DEBITO",
     VC_ELECTRON: "DEBITO", AMEX: "CREDITO", ELO_CR: "CREDITO",
-    MASTERCARD: "CREDITO", VISA: "CREDITO", DINHEIRO: "DINHEIRO",
+    MASTERCARD: "CREDITO", VISA: "CREDITO", PIX_CNPJ: "DEBITO",
+    DINHEIRO: "DINHEIRO",
   };
+  // Real digitado manualmente: nao vem do CSV PagBank (cartoes).
+  const restManualReal = ["DINHEIRO", "PIX_CNPJ"];
 
   function localISO(offsetDays = 0): string {
     const now = new Date();
@@ -605,7 +609,7 @@
       const result = await uploadFile(endpoint, file);
       statusRestPagbank = `${result.registros_aprovados} registros aprovados (${file.name})`;
       for (const key of restCategories) {
-        if (key === "DINHEIRO") continue;
+        if (restManualReal.includes(key)) continue;
         categorias[key].real = result.categorias?.[key]?.real || 0;
       }
       syncRealVars();
@@ -983,7 +987,7 @@
     const store1 = turnoStore[1] || emptyRestTurno();
     const store2 = turnoStore[2] || emptyRestTurno();
     for (const key of restCategories) {
-      if (key === "DINHEIRO") continue;
+      if (restManualReal.includes(key)) continue;
       store1.categorias[key] = { ...store1.categorias[key], real: result.turno1?.categorias?.[key]?.real || 0 };
       store2.categorias[key] = { ...store2.categorias[key], real: result.turno2?.categorias?.[key]?.real || 0 };
     }
@@ -991,7 +995,7 @@
     for (const store of [store1, store2]) {
       store.realVars = { ...(store.realVars || {}) };
       for (const key of restCategories) {
-        if (key === "DINHEIRO") continue;
+        if (restManualReal.includes(key)) continue;
         const val = Number(store.categorias[key]?.real || 0);
         store.realVars[key] = val ? String(val).replace(".", ",") : "";
       }
@@ -1327,6 +1331,15 @@
       real: Number(cats["DINHEIRO"]?.real || 0),
     };
 
+    // No Cloudfy a forma "CHEQUE" e, na pratica, PIX CNPJ.
+    const pixCnpjVal = parseMoney(resultado.cheque || "0");
+    const pixCnpjAtual = somar ? Number(cats["PIX_CNPJ"]?.sistema || 0) : 0;
+    cats["PIX_CNPJ"] = {
+      ...(cats["PIX_CNPJ"] || { sistema: 0, real: 0 }),
+      sistema: Math.round((pixCnpjAtual + pixCnpjVal) * 100) / 100,
+      real: Number(cats["PIX_CNPJ"]?.real || 0),
+    };
+
     for (const pg of resultado.pagamentos || []) {
       const subtipoCloudfy = String(pg.subtipo || "").trim();
       const key = mapping[subtipoCloudfy];
@@ -1466,6 +1479,8 @@
 
     const dinheiroReal = categorias["DINHEIRO"]?.real || 0;
     const dinheiroStr = String(dinheiroReal).replace(".", ",");
+    const pixCnpjReal = categorias["PIX_CNPJ"]?.real || 0;
+    const chequeStr = String(pixCnpjReal).replace(".", ",");
 
     try {
       const res = await fetch("/api/conciliador/automacao/lancar", {
@@ -1476,6 +1491,7 @@
           caixa_idx: caixa ? undefined : caixaIdx,
           data: data || undefined,
           dinheiro_valor: dinheiroStr,
+          cheque_valor: chequeStr,
           mapeamento: mapping,
           categorias: JSON.parse(JSON.stringify(categorias)),
         }),
@@ -1797,7 +1813,7 @@
           `Importado da pasta: ${payload.filename} (dividido em ${splitTime})`;
       } else {
         for (const importKey of restCategories) {
-          if (importKey === "DINHEIRO") continue;
+          if (restManualReal.includes(importKey)) continue;
           categorias[importKey] = {
             ...categorias[importKey],
             real: payload.result?.categorias?.[importKey]?.real || 0,
@@ -2230,7 +2246,7 @@
           </label>
           <button
             disabled={readonly}
-            onclick={() => { statusRestPagbank = "Nenhum arquivo importado"; for (const k of restCategories) { if (k !== "DINHEIRO") categorias[k].real = 0; } lastRestFile = null; lastRestFileDate = ""; autoImportFile = ""; }}
+            onclick={() => { statusRestPagbank = "Nenhum arquivo importado"; for (const k of restCategories) { if (!restManualReal.includes(k)) categorias[k].real = 0; } lastRestFile = null; lastRestFileDate = ""; autoImportFile = ""; }}
             class="inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-accent"
           >
             Remover
