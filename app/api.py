@@ -76,7 +76,7 @@ def create_app() -> FastAPI:
             )
             return {"downloaded": True, "path": str(path), "error": None}
         except Exception as exc:
-            return {"downloaded": False, "error": str(exc)}
+            return {"downloaded": False, "error": updater.mensagem_erro(exc)}
 
     @app.post("/api/update/apply")
     async def update_apply(payload: dict):

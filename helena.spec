@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 sys.path.insert(0, str(Path('.').resolve()))
 try:
@@ -26,6 +26,7 @@ hiddenimports = [
     'reportlab.graphics.barcode',
     'xlrd',
     'openpyxl',
+    'certifi',
 ]
 hiddenimports += collect_submodules('app.modules')
 
@@ -42,7 +43,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('app/frontend/dist', 'frontend/dist'),
-    ],
+    ] + collect_data_files('certifi'),
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

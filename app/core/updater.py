@@ -83,14 +83,66 @@ def _asset_matches(name: str) -> bool:
 
 # ─── HTTP helpers (stdlib) ───────────────────────────────────────
 
-def _ssl_context() -> ssl.SSLContext:
+# Bundles de CA presentes em macOS e nas principais distribuicoes Linux.
+_SYSTEM_CA_BUNDLES = (
+    "/etc/ssl/cert.pem",                    # macOS / FreeBSD
+    "/etc/ssl/certs/ca-certificates.crt",   # Debian / Ubuntu
+    "/etc/pki/tls/certs/ca-bundle.crt",     # RHEL / Fedora
+)
+
+
+def _ca_bundle() -> str | None:
+    """Caminho de um bundle de CAs que exista de verdade no app empacotado.
+
+    ``ssl.create_default_context()`` usa os caminhos do Python que compilou o
+    executavel. Num app congelado esse prefixo (`/Users/runner/...`,
+    `/opt/hostedtoolcache/...`) nao existe na maquina do usuario, e a
+    verificacao TLS falha com `CERTIFICATE_VERIFY_FAILED`. Por isso damos
+    prioridade ao bundle embarcado pelo PyInstaller (certifi) e, na falta
+    dele, a um bundle do sistema operacional.
+    """
     try:
-        return ssl.create_default_context()
-    except Exception:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        return ctx
+        import certifi
+
+        caminho = Path(certifi.where())
+        if caminho.is_file():
+            return str(caminho)
+    except Exception:  # certifi ausente no build: tenta sistema
+        pass
+
+    env = os.environ.get("SSL_CERT_FILE", "").strip()
+    if env and Path(env).is_file():
+        return env
+
+    for candidato in _SYSTEM_CA_BUNDLES:
+        if Path(candidato).is_file():
+            return candidato
+    return None
+
+
+def _ssl_context() -> ssl.SSLContext:
+    bundle = _ca_bundle()
+    if bundle:
+        return ssl.create_default_context(cafile=bundle)
+    return ssl.create_default_context()
+
+
+def mensagem_erro(exc: Exception) -> str:
+    """Mensagem acionavel para falhas de rede/TLS do auto-update."""
+    texto = str(exc) or exc.__class__.__name__
+    causa = getattr(exc, "reason", None)
+    if causa is not None:
+        texto = f"{texto} ({causa})"
+    motivo = causa if isinstance(causa, BaseException) else exc
+    if isinstance(motivo, ssl.SSLCertVerificationError) or (
+        "CERTIFICATE_VERIFY_FAILED" in texto.upper()
+    ):
+        return (
+            "Falha ao validar o certificado TLS do GitHub. Atualize manualmente "
+            "pela pagina de releases do repositorio oficial. "
+            f"Detalhe: {texto}"
+        )
+    return texto
 
 
 def _get_json(url: str, timeout: int = 15) -> dict:
@@ -154,6 +206,12 @@ def check_for_update(repo: str) -> dict:
         "error": None,
     }
     try:
+        logger.info(
+            "Update check: atual=%s frozen=%s ca=%s",
+            __version__,
+            bool(getattr(sys, "frozen", False)),
+            _ca_bundle() or "python-default",
+        )
         data = _get_json(f"{GITHUB_API}/repos/{repo}/releases/latest")
         tag = data.get("tag_name") or data.get("name") or ""
         result["latest_version"] = _normalize(tag)
@@ -177,8 +235,8 @@ def check_for_update(repo: str) -> dict:
             tag and is_newer(tag, __version__) and result["download_url"]
         )
     except Exception as exc:  # network / parsing errors are non fatal
-        logger.error(f"Update check failed: {exc}")
-        result["error"] = str(exc)
+        logger.exception(f"Update check failed: {exc}")
+        result["error"] = mensagem_erro(exc)
     return result
 
 
@@ -399,5 +457,5 @@ def apply_update(downloaded_path: str) -> dict:
         threading.Thread(target=_run_and_exit, daemon=True).start()
         return {"applied": True, "error": None}
     except Exception as exc:
-        logger.error(f"Apply update failed: {exc}")
+        logger.exception(f"Apply update failed: {exc}")
         return {"applied": False, "error": str(exc)}
