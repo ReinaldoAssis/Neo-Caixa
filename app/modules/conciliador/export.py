@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 from app.modules.conciliador.constants import (
     CATEGORY_LABELS_POSTO,
@@ -248,6 +249,14 @@ def generate_conciliation_pdf_bytes(caixa: dict, posto_config: dict | None = Non
                         styles["Normal"],
                     ))
                 story.append(Spacer(1, 0.2 * cm))
+
+        observacoes = str(caixa.get("observacoes") or "").strip()
+        if observacoes:
+            story.extend([
+                Spacer(1, 0.4 * cm),
+                Paragraph("Observacoes", styles["Heading2"]),
+                Paragraph(escape(observacoes).replace("\n", "<br/>"), styles["Normal"]),
+            ])
 
     finally:
         pass

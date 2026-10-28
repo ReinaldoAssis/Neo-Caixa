@@ -56,7 +56,13 @@ from app.modules.conciliador.automacao import (
     importar_caixas_cloudfy,
     lancar_caixa_cloudfy,
     lancar_financeiro_cloudfy,
+    conferir_extrato_adm_cloudfy,
     baixar_descontos_cloudfy,
+)
+from app.modules.conciliador.conferencia_adm import (
+    avaliar as avaliar_conferencia_adm,
+    listar as listar_conferencias_adm,
+    registrar as registrar_conferencia_adm,
 )
 from app.modules.conciliador.financeiro import (
     normalizar_despesas,
@@ -889,6 +895,55 @@ async def financeiro_lancar(data: dict):
         )
 
     return {**result, "registros": registros}
+
+
+# ─── Conferência ADM (extrato x caixa restaurante) ──────────────
+
+@router.get("/conferencia-adm")
+async def conferencia_adm_historico(limite: int = Query(20, ge=1, le=100)):
+    return {"historico": listar_conferencias_adm(app_context.database, limite)}
+
+
+@router.post("/conferencia-adm")
+async def conferencia_adm_executar(data: dict):
+    import asyncio as aio
+
+    data_iso = str(data.get("data") or "").strip()
+    try:
+        datetime.strptime(data_iso, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail="Informe a data no formato YYYY-MM-DD."
+        )
+
+    login, senha, debug, otimizar = _cloudfy_config()
+    if not login or not senha:
+        raise HTTPException(
+            status_code=400,
+            detail="Credenciais Cloudfy nao configuradas. Acesse Configuracoes.",
+        )
+
+    loop = aio.get_running_loop()
+    try:
+        resultado = await loop.run_in_executor(
+            None,
+            conferir_extrato_adm_cloudfy,
+            login,
+            senha,
+            data_iso,
+            debug,
+            otimizar,
+        )
+    except (AutomacaoOcupada, AutomacaoIndisponivel) as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    if resultado.get("erro"):
+        raise HTTPException(status_code=500, detail=str(resultado["erro"]))
+
+    avaliado = avaliar_conferencia_adm(
+        app_context.database, data_iso, resultado
+    )
+    return registrar_conferencia_adm(app_context.database, avaliado)
 
 
 # ─── Gerenciador de Descontos ───────────────────────────────────

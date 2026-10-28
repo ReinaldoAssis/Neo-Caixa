@@ -19,6 +19,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Any
 
 from app.core.logger import logger
+from app.modules.conciliador.constants import parse_money
 from app.modules.conciliador.financeiro import (
     TIPO_DESPESA,
     TIPO_MOEDAS,
@@ -1580,6 +1581,184 @@ async def executar_lancamentos_financeiros(
     return {"resultados": resultados, "total": len(resultados)}
 
 
+# ─── Conferência ADM (extrato x dinheiro do caixa) ───────────────
+
+PERIODO_RE = re.compile(
+    r"\d{2}/\d{2}/\d{4}\s*[Aa]\s*\d{2}/\d{2}/\d{4}"
+)
+
+
+async def _marcar_checkbox(page, item, marcado: bool) -> None:
+    caixa = item.locator(".icheckbox_md").first
+    classes = (await caixa.get_attribute("class") or "").split()
+    atual = "checked" in classes
+    if atual == marcado:
+        return
+    await _clicar_js(item.locator("label").first)
+    await page.wait_for_timeout(150)
+
+
+async def _filtrar_conta_adm(page) -> None:
+    botao = page.locator('button.md-btn:has-text("Contas bancárias")').first
+    await botao.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
+    await botao.hover()
+
+    dropdown = page.locator("div.uk-dropdown:visible").filter(
+        has_text="Todas as contas"
+    ).first
+    await dropdown.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
+
+    todas = dropdown.locator(
+        '[skn-label-field="H02SF0201E_TODAS_AS_CONTAS"]'
+    ).first
+    caixa_adm = dropdown.locator('[skn-label-field="CAIXA ADM"]').first
+    await todas.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
+    await caixa_adm.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
+
+    await _marcar_checkbox(page, todas, False)
+    await _marcar_checkbox(page, caixa_adm, True)
+
+    aplicar = dropdown.locator('[skn-id="Components.BtnAplicarContas"] a').first
+    await _clicar_js(aplicar)
+    await page.wait_for_timeout(1200)
+
+
+async def _filtrar_periodo_adm(page, data_iso: str) -> None:
+    data_br = _data_br(data_iso)
+    botao = page.locator("button.md-btn").filter(has_text=PERIODO_RE).first
+    await botao.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
+    await botao.hover()
+
+    escolha = page.locator(
+        'a[ng-click="onClickSelecionarPeriodo()"]:visible'
+    ).first
+    await escolha.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
+    await _clicar_js(escolha)
+
+    inputs = page.locator("input[dir-date-picker]:visible")
+    await inputs.first.wait_for(state="visible", timeout=TIMEOUT_CURTO_MS)
+    total = await inputs.count()
+    if total < 2:
+        raise RuntimeError("Periodo do extrato nao abriu os dois campos de data.")
+    for posicao in range(2):
+        campo = inputs.nth(posicao)
+        await campo.fill(data_br)
+        await campo.press("Tab")
+
+    ok = page.locator('a.md-btn:has-text("OK"):visible').last
+    await _clicar_js(ok)
+    await page.wait_for_timeout(1500)
+
+
+async def _abrir_extrato_adm(page) -> None:
+    botao = page.locator('button.md-btn:has-text("Contas a pagar")').first
+    if await botao.count():
+        try:
+            await botao.hover()
+        except Exception:
+            pass
+    alvo = page.locator('a[ng-click="onFiltraExtrato()"]').first
+    await _clicar_js(alvo)
+    await page.locator("span[ng-bind='VL_TOTAL']").first.wait_for(
+        state="visible", timeout=TIMEOUT_PADRAO_MS
+    )
+
+
+async def _extrair_extrato_adm(page) -> dict[str, Any]:
+    total_texto = (
+        await page.locator("span[ng-bind='VL_TOTAL']").first.inner_text()
+    ).strip()
+
+    dados = await page.evaluate(
+        """
+        () => Array.from(
+            document.querySelectorAll('tr[ng-repeat*="sknDataProviderFiltered"]')
+        ).map((row) => {
+            try {
+                const scope = window.angular && window.angular.element(row).scope();
+                const data = scope && scope.Data;
+                if (data) {
+                    return {
+                        descricao: data.FI030_VC_LANC || '',
+                        valor: data.FI030_VL_LANC || '',
+                        data: data.FI030_DT_DATA || '',
+                    };
+                }
+            } catch (erro) {
+                // cai no fallback por celulas
+            }
+            const tds = row.querySelectorAll('td');
+            return {
+                descricao: tds[2] ? tds[2].innerText : '',
+                valor: tds[11] ? tds[11].innerText : '',
+                data: tds[1] ? tds[1].innerText : '',
+            };
+        })
+        """
+    )
+
+    linhas: list[dict[str, Any]] = []
+    for item in dados:
+        descricao = " ".join(str(item.get("descricao") or "").split())
+        if not descricao or descricao.upper() == "SALDO ANTERIOR":
+            continue
+        linhas.append(
+            {
+                "descricao": descricao,
+                "valor": parse_money(item.get("valor")),
+                "data": str(item.get("data") or "").strip(),
+            }
+        )
+
+    total = parse_money(total_texto)
+    soma = round(sum(item["valor"] for item in linhas), 2)
+    return {
+        "total": total,
+        "total_texto": total_texto,
+        "linhas": linhas,
+        "soma_linhas": soma,
+        "extrato_inconsistente": abs(soma - total) > 0.005,
+    }
+
+
+async def conferir_extrato_adm(page, data_iso: str) -> dict[str, Any]:
+    """Lê o extrato CAIXA ADM da data. Não altera nada no Cloudfy."""
+    inicio = time.perf_counter()
+    await _abrir_extrato_adm(page)
+    _marcar("financeiro.extrato", inicio)
+
+    inicio = time.perf_counter()
+    await _filtrar_conta_adm(page)
+    _marcar("financeiro.extrato.contas", inicio)
+
+    inicio = time.perf_counter()
+    await _filtrar_periodo_adm(page, data_iso)
+    _marcar("financeiro.extrato.periodo", inicio)
+
+    inicio = time.perf_counter()
+    try:
+        await page.wait_for_function(
+            """
+            (dataBr) => {
+                const rows = Array.from(document.querySelectorAll(
+                    'tr[ng-repeat*="sknDataProviderFiltered"]'
+                ));
+                if (!rows.length) return false;
+                return rows.every((row) => (
+                    (row.textContent || '').includes(dataBr)
+                ));
+            }
+            """,
+            arg=_data_br(data_iso),
+            timeout=TIMEOUT_PADRAO_MS,
+        )
+    except Exception:
+        logger.warning("[automacao] extrato sem sinal de filtro; lendo assim mesmo")
+    dados = await _extrair_extrato_adm(page)
+    _marcar("financeiro.extrato.ler", inicio)
+    return dados
+
+
 async def abrir_relatorio_descontos(page, context, usuario: str, senha: str):
     inicio = time.perf_counter()
     await page.goto(HOME_URL, wait_until="domcontentloaded")
@@ -1735,6 +1914,23 @@ def lancar_financeiro_cloudfy(
         senha,
         itens,
         config,
+        debug=debug,
+        otimizar=otimizar,
+    )
+
+
+def conferir_extrato_adm_cloudfy(
+    login: str,
+    senha: str,
+    data_iso: str,
+    debug: bool = False,
+    otimizar: bool = True,
+) -> dict:
+    """Lê o extrato CAIXA ADM no gerenciador financeiro. Headless."""
+    return _sessao().conferir_extrato_adm(
+        login,
+        senha,
+        data_iso,
         debug=debug,
         otimizar=otimizar,
     )

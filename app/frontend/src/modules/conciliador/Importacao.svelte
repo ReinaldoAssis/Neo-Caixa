@@ -2616,6 +2616,22 @@
         </table>
       {/if}
     </div>
+
+    {#if tipo === "posto"}
+      <div class="mb-4 rounded-lg border p-4">
+        <label class="mb-2 block text-sm font-semibold" for="observacoes-posto">
+          Observacoes
+        </label>
+        <textarea
+          id="observacoes-posto"
+          bind:value={observacoes}
+          disabled={readonly}
+          rows="3"
+          placeholder="Observacoes do caixa do posto"
+          class="w-full rounded-md border bg-background px-3 py-2 text-sm disabled:opacity-60"
+        ></textarea>
+      </div>
+    {/if}
   </div>
 
   <!-- Footer -->

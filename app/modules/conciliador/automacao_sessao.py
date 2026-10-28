@@ -587,6 +587,37 @@ class AutomacaoSession:
 
         return self._submit(lambda: self._executar(otimizar, op), timeout=900)
 
+    def conferir_extrato_adm(
+        self,
+        login: str,
+        senha: str,
+        data_iso: str,
+        debug: bool = False,
+        otimizar: bool = True,
+    ) -> dict:
+        from app.modules.conciliador import automacao as ops
+
+        async def op():
+            if self._browser_ok() and self._headed and not self._debug:
+                raise AutomacaoIndisponivel(
+                    "Feche o navegador da automacao (botao 'Fechar navegador') "
+                    "antes de conferir o extrato."
+                )
+            await self._ensure_ready(login, senha, debug)
+            if self._headed and not self._debug:
+                raise AutomacaoIndisponivel(
+                    "Feche o navegador da automacao (botao 'Fechar navegador') "
+                    "antes de conferir o extrato."
+                )
+            try:
+                await ops.abrir_financeiro(self._page, login, senha)
+            except Exception as exc:  # noqa: BLE001 - devolve erro claro
+                logger.warning("[automacao] financeiro indisponivel: %s", exc)
+                return {"erro": str(exc)}
+            return await ops.conferir_extrato_adm(self._page, data_iso)
+
+        return self._submit(lambda: self._executar(otimizar, op), timeout=300)
+
     def descontos(self, login: str, senha: str, debug: bool = False, otimizar: bool = True) -> dict:
         from app.modules.conciliador import automacao as ops
 

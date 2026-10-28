@@ -1,13 +1,21 @@
 <script lang="ts">
-  import { BadgePercent, Construction, Wallet, Wrench } from "lucide-svelte";
+  import { BadgePercent, ClipboardCheck, Construction, Wallet, Wrench } from "lucide-svelte";
+  import ConferenciaAdm from "./ConferenciaAdm.svelte";
   import GerenciadorDescontos from "./GerenciadorDescontos.svelte";
   import SaldosCaixa from "./SaldosCaixa.svelte";
 
-  type Ferramenta = "descontos" | "saldos" | null;
+  type Ferramenta = "descontos" | "saldos" | "conferencia-adm" | null;
 
   let ativa = $state<Ferramenta>(null);
 
   const ferramentas = [
+    {
+      id: "conferencia-adm",
+      label: "Conferencia ADM",
+      descricao: "Compare o extrato CAIXA ADM com o dinheiro do caixa restaurante.",
+      icon: ClipboardCheck,
+      enabled: true,
+    },
     {
       id: "descontos",
       label: "Gerenciador de Descontos",
@@ -43,6 +51,8 @@
   <GerenciadorDescontos onVoltar={() => (ativa = null)} />
 {:else if ativa === "saldos"}
   <SaldosCaixa onVoltar={() => (ativa = null)} />
+{:else if ativa === "conferencia-adm"}
+  <ConferenciaAdm onVoltar={() => (ativa = null)} />
 {:else}
   <div class="flex h-full flex-col overflow-auto">
     <div class="border-b px-4 py-3">
