@@ -1,10 +1,11 @@
-"""Conferência do extrato CAIXA ADM x dinheiro do caixa restaurante."""
+"""Conferência do extrato CAIXA ADM x dinheiro em espécie do caixa restaurante."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
 
+from app.modules.conciliador.constants import parse_money
 from app.modules.conciliador.services import total_contagens_dinheiro
 
 TABLE = "conferencias_adm"
@@ -40,6 +41,30 @@ def dinheiro_real_caixa(doc: dict[str, Any]) -> float:
     return round(total_contagens_dinheiro(contagens) + ajuste, 2)
 
 
+def moedas_caixa(doc: dict[str, Any]) -> float:
+    """Total de moedas da contagem (dinheiro que nao e cedula)."""
+    if doc.get("dinheiro_moedas") is not None:
+        return _to_float(doc.get("dinheiro_moedas"))
+    contagens = doc.get("contagens_dinheiro") or []
+    return round(
+        sum(
+            parse_money(c.get("moedas", 0))
+            for c in contagens
+            if c.get("label") == "Geral"
+        ),
+        2,
+    )
+
+
+def dinheiro_especie_caixa(doc: dict[str, Any]) -> float:
+    """Dinheiro em especie do caixa: cedulas, sem moedas.
+
+    A conferencia ADM compara o extrato com o dinheiro em especie; moedas
+    ficam de fora do calculo.
+    """
+    return round(dinheiro_real_caixa(doc) - moedas_caixa(doc), 2)
+
+
 def caixas_do_dia(database, data_iso: str) -> list[dict[str, Any]]:
     out = []
     for doc in database.all("conciliacoes"):
@@ -61,7 +86,8 @@ def avaliar(
     extrato: dict[str, Any],
 ) -> dict[str, Any]:
     caixas = caixas_do_dia(database, data_iso)
-    caixa_total = round(sum(dinheiro_real_caixa(c) for c in caixas), 2)
+    caixa_total = round(sum(dinheiro_especie_caixa(c) for c in caixas), 2)
+    caixa_moedas = round(sum(moedas_caixa(c) for c in caixas), 2)
     extrato_total = _to_float(extrato.get("total"))
     linhas = extrato.get("linhas") or []
     soma_linhas = round(sum(_to_float(item.get("valor")) for item in linhas), 2)
@@ -86,6 +112,7 @@ def avaliar(
         "soma_linhas": soma_linhas,
         "extrato_inconsistente": inconsistencias,
         "caixa_total": caixa_total,
+        "caixa_moedas": caixa_moedas,
         "caixa_qtd": len(caixas),
         "caixa_ids": [
             str(c.get("doc_id") or c.get("id") or "") for c in caixas

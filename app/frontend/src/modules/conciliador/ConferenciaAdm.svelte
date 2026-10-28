@@ -28,6 +28,7 @@
     soma_linhas: number;
     extrato_inconsistente: boolean;
     caixa_total: number;
+    caixa_moedas?: number;
     caixa_qtd: number;
     caixa_ids: string[];
     diferenca: number | null;
@@ -232,7 +233,7 @@
               </p>
             {:else}
               <p class="text-sm">
-                Extrato {formatMoney(resultado.extrato_total)} × caixa
+                Extrato {formatMoney(resultado.extrato_total)} × caixa em especie
                 {formatMoney(resultado.caixa_total)} = diferenca
                 {formatDiferenca(resultado.diferenca)}.
               </p>
@@ -247,10 +248,13 @@
           <p class="text-lg font-semibold">{formatMoney(resultado.extrato_total)}</p>
         </div>
         <div class="rounded-md border p-3">
-          <p class="text-xs text-muted-foreground">Caixa restaurante</p>
+          <p class="text-xs text-muted-foreground">Caixa em especie (sem moedas)</p>
           <p class="text-lg font-semibold">{formatMoney(resultado.caixa_total)}</p>
           <p class="text-xs text-muted-foreground">
             {resultado.caixa_qtd} caixa(s) na data
+            {#if resultado.caixa_moedas}
+              · {formatMoney(resultado.caixa_moedas)} em moedas ignorado
+            {/if}
           </p>
         </div>
         <div class="rounded-md border p-3">

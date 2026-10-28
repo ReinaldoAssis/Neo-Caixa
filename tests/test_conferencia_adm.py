@@ -10,16 +10,26 @@ def _db(tmp_path):
     return TinyDBDriver(str(tmp_path / "test.json"))
 
 
-def _caixa(db, data="2026-10-26", dinheiro=100.0, status="rascunho", tipo="restaurante"):
-    db.insert(
-        "conciliacoes",
-        {
-            "tipo": tipo,
-            "data": data,
-            "status": status,
-            "dinheiro_real": dinheiro,
-        },
-    )
+def _caixa(
+    db,
+    data="2026-10-26",
+    dinheiro=100.0,
+    status="rascunho",
+    tipo="restaurante",
+    moedas=None,
+    contagens=None,
+):
+    doc = {
+        "tipo": tipo,
+        "data": data,
+        "status": status,
+        "dinheiro_real": dinheiro,
+    }
+    if moedas is not None:
+        doc["dinheiro_moedas"] = moedas
+    if contagens is not None:
+        doc["contagens_dinheiro"] = contagens
+    db.insert("conciliacoes", doc)
 
 
 def _extrato(total=150.0, linhas=None):
@@ -64,6 +74,49 @@ def test_conferencia_sem_caixa(tmp_path):
     assert out["caixa_qtd"] == 0
     assert out["diferenca"] is None
     assert out["status"] == conferencia_adm.STATUS_SEM_CAIXA
+
+
+def test_conferencia_ignora_moedas(tmp_path):
+    db = _db(tmp_path)
+    _caixa(db, dinheiro=150.0, moedas=20.0)
+
+    out = conferencia_adm.avaliar(db, "2026-10-26", _extrato(130.0))
+    assert out["caixa_total"] == 130.0
+    assert out["caixa_moedas"] == 20.0
+    assert out["diferenca"] == 0.0
+    assert out["status"] == conferencia_adm.STATUS_BATE
+
+
+def test_conferencia_moedas_derivadas_das_contagens(tmp_path):
+    db = _db(tmp_path)
+    _caixa(
+        db,
+        dinheiro=150.0,
+        contagens=[{"label": "Geral", "total": 150.0, "moedas": 12.5}],
+    )
+
+    out = conferencia_adm.avaliar(db, "2026-10-26", _extrato(137.5))
+    assert out["caixa_total"] == 137.5
+    assert out["caixa_moedas"] == 12.5
+    assert out["status"] == conferencia_adm.STATUS_BATE
+
+
+def test_conferencia_soma_moedas_dos_turnos(tmp_path):
+    db = _db(tmp_path)
+    _caixa(
+        db,
+        dinheiro=200.0,
+        moedas=30.0,
+        contagens=[
+            {"label": "Geral", "total": 120.0, "moedas": 10.0},
+            {"label": "Geral", "total": 80.0, "moedas": 20.0},
+        ],
+    )
+
+    out = conferencia_adm.avaliar(db, "2026-10-26", _extrato(170.0))
+    assert out["caixa_total"] == 170.0
+    assert out["caixa_moedas"] == 30.0
+    assert out["status"] == conferencia_adm.STATUS_BATE
 
 
 def test_conferencia_sinaliza_extrato_inconsistente(tmp_path):

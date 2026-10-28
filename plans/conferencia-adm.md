@@ -25,12 +25,17 @@ Fluxo:
 
 Comparação:
 
-- Caixa: soma de `dinheiro_real` de todos os caixas restaurante não arquivados
-  da data (contagens avulsas são ignoradas).
+- Caixa: **dinheiro em espécie** de todos os caixas restaurante não arquivados
+  da data. Espécie = `dinheiro_real - dinheiro_moedas`; **moedas ficam fora**
+  do cálculo. Contagens avulsas são ignoradas.
+- `dinheiro_moedas` vem do documento; se faltar (caixa antigo), é derivado da
+  soma de `moedas` das contagens `Geral`.
 - `bate` quando `|extrato - caixa| <= 0,005`; senão `nao_bate`.
 - Sem caixa na data: mostra extrato + aviso, sem veredito.
 - Se a soma das linhas não fechar com `VL_TOTAL`, sinaliza
   `extrato_inconsistente` e continua.
+- A tela mostra `caixa_moedas` como valor ignorado, para deixar a exclusão
+  explícita.
 
 Histórico:
 
@@ -55,3 +60,10 @@ Automação:
 
 Testes: `pytest -q` **77 passed**; UI local com TinyDB temporário validou
 histórico, `bate` com caixa 1.289 e `sem_caixa` com diferenca nula.
+
+## Ajuste 2026-10-28 — moedas fora do cálculo
+
+- `conferencia_adm.dinheiro_especie_caixa(doc) = dinheiro_real_caixa - moedas_caixa`.
+- `conferencia_adm.moedas_caixa(doc)`: usa `dinheiro_moedas`; fallback soma
+  `moedas` das contagens `Geral`.
+- Resultado e histórico ganharam `caixa_moedas`.
