@@ -220,6 +220,11 @@
   let statusRestPagbank = $state("");
   let premmiaLancamentos = $state<any[]>([]);
   let premmiaSort = $state<Record<string, "asc" | "desc" | null>>({});
+  // Fontes do lado "site" do posto, mantidas separadas para poder remover um
+  // relatorio sem apagar o outro e para importar em qualquer ordem.
+  let pagbankCats = $state<Record<string, number>>({});
+  let premmiaCats = $state<Record<string, number>>({});
+  let manualSite = $state<Record<string, number>>({});
 
   // Categorias que tem valor real mas nao tem linha no Cloudfy (sistema 0):
   // a automacao nao consegue preencher e o usuario corrige manualmente.
@@ -399,6 +404,7 @@
         statusCaixa = doc.status_caixa || "";
         statusPagbank = doc.status_pagbank || "";
         statusPremmia = doc.status_premmia || "";
+        initPostoRelatorios(doc);
         initPostoSistemaVars();
         handleContagemChange();
       } else {
@@ -458,6 +464,71 @@
       const val = categorias[key]?.site || 0;
       siteVars[key] = val ? String(val).replace(".", ",") : "";
     }
+  }
+
+  function isSangriaKey(key: string): boolean {
+    return key === "SANGRIA" || (postoLabels[key] || "").toUpperCase() === "SANGRIA";
+  }
+
+  function chavesComValor(mapa: Record<string, number>): string[] {
+    return Object.entries(mapa || {})
+      .filter(([, valor]) => Number(valor) !== 0)
+      .map(([key]) => key);
+  }
+
+  function limparManualSite(chaves: string[]) {
+    if (!chaves.length) return;
+    const novo = { ...manualSite };
+    for (const key of chaves) delete novo[key];
+    manualSite = novo;
+  }
+
+  function initPostoRelatorios(doc: any) {
+    pagbankCats = { ...(doc?.pagbank_site || {}) };
+    premmiaCats = { ...(doc?.premmia_site || {}) };
+    manualSite = { ...(doc?.manual_site || {}) };
+    if (doc?.pagbank_site || doc?.premmia_site) return;
+
+    // Rascunho antigo sem fontes salvas: separa pela origem das categorias
+    // (PREMMIA_* vem do relatorio Premmia; FITCARD tem campo proprio).
+    const temStatus = (valor: string) =>
+      Boolean(valor && valor !== "Nenhum arquivo importado");
+    const temPagbank = temStatus(statusPagbank);
+    const temPremmia = temStatus(statusPremmia);
+    for (const key of postoCategories) {
+      if (isSangriaKey(key) || key === "FITCARD") continue;
+      const valor = Number(categorias[key]?.site || 0);
+      if (!valor) continue;
+      if (temPremmia && !temPagbank) premmiaCats[key] = valor;
+      else if (temPagbank && !temPremmia) pagbankCats[key] = valor;
+      else if (key.startsWith("PREMMIA_")) premmiaCats[key] = valor;
+      else pagbankCats[key] = valor;
+    }
+  }
+
+  function sitePorCategoria(result: any): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const key of postoCategories) {
+      if (isSangriaKey(key)) continue;
+      out[key] = Number(result?.categorias?.[key]?.site || 0);
+    }
+    return out;
+  }
+
+  function recalcPostoSite() {
+    for (const key of postoCategories) {
+      if (isSangriaKey(key)) continue;
+      let site = Number(pagbankCats[key] || 0) + Number(premmiaCats[key] || 0);
+      if (key === "FITCARD") site += parseMoney(fitcardTotal);
+      if (manualSite[key] !== undefined) site = Number(manualSite[key]);
+      categorias[key] = {
+        ...categorias[key],
+        sistema: categorias[key]?.sistema || 0,
+        site: Math.round(site * 100) / 100,
+      };
+    }
+    categorias = categorias;
+    handleContagemChange();
   }
 
   function parseMoney(text: string): number {
@@ -520,6 +591,8 @@
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
+    // Permite selecionar o mesmo arquivo de novo depois de remover.
+    input.value = "";
     loading = true;
     try {
       const result = await uploadFile("/parser/caixa", file);
@@ -531,6 +604,7 @@
       notasPrazo = result.notas_a_prazo || 0;
       despesas = result.despesas || 0;
       initPostoSistemaVars();
+      handleContagemChange();
     } catch (e: any) {
       errorMessage = e.message;
     } finally {
@@ -542,17 +616,15 @@
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
+    input.value = "";
     loading = true;
     try {
       const result = await uploadFile("/parser/pagbank", file);
+      const novo = sitePorCategoria(result);
+      limparManualSite([...chavesComValor(pagbankCats), ...chavesComValor(novo)]);
+      pagbankCats = novo;
       statusPagbank = `${result.registros_aprovados} registros aprovados`;
-      for (const key of postoCategories) {
-        const isSangria = key === "SANGRIA" || (postoLabels[key] || "").toUpperCase() === "SANGRIA";
-        if (!isSangria) {
-          categorias[key].site = result.categorias?.[key]?.site || 0;
-        }
-      }
-      syncSiteVars();
+      recalcPostoSite();
     } catch (e: any) {
       errorMessage = e.message;
     } finally {
@@ -564,19 +636,17 @@
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
+    input.value = "";
     loading = true;
     try {
       const result = await uploadFile("/parser/premmia", file);
+      const novo = sitePorCategoria(result);
+      limparManualSite([...chavesComValor(premmiaCats), ...chavesComValor(novo)]);
+      premmiaCats = novo;
       statusPremmia = `Formato ${result.formato}. ${result.transacoes_processadas} transacoes`;
       premmiaLancamentos = result.lancamentos || [];
       premmiaSort = {};
-      for (const key of postoCategories) {
-        const isSangria = key === "SANGRIA" || (postoLabels[key] || "").toUpperCase() === "SANGRIA";
-        if (!isSangria && result.categorias?.[key]?.site) {
-          categorias[key].site = (categorias[key].site || 0) + result.categorias[key].site;
-        }
-      }
-      syncSiteVars();
+      recalcPostoSite();
     } catch (e: any) {
       errorMessage = e.message;
     } finally {
@@ -584,10 +654,40 @@
     }
   }
 
+  function removerRelatorioCaixa() {
+    statusCaixa = "Nenhum arquivo importado";
+    for (const key of postoCategories) {
+      categorias[key] = { ...categorias[key], sistema: 0 };
+    }
+    sangria = 0;
+    notasPrazo = 0;
+    despesas = 0;
+    categorias = categorias;
+    initPostoSistemaVars();
+    recalcPostoSite();
+  }
+
+  function removerRelatorioPagbank() {
+    limparManualSite(chavesComValor(pagbankCats));
+    pagbankCats = {};
+    statusPagbank = "Nenhum arquivo importado";
+    recalcPostoSite();
+  }
+
+  function removerRelatorioPremmia() {
+    limparManualSite(chavesComValor(premmiaCats));
+    premmiaCats = {};
+    premmiaLancamentos = [];
+    premmiaSort = {};
+    statusPremmia = "Nenhum arquivo importado";
+    recalcPostoSite();
+  }
+
   async function handleRestPagbankUpload(e: Event) {
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
+    input.value = "";
 
     lastRestFile = file;
     lastRestFileDate = data;
@@ -1030,9 +1130,11 @@
 
   function handleFitcardChange(e: Event) {
     fitcardTotal = (e.target as HTMLInputElement).value;
-    const val = parseMoney(fitcardTotal);
     if (tipo === "posto") {
-      categorias["FITCARD"] = { ...categorias["FITCARD"], sistema: categorias["FITCARD"].sistema, site: val };
+      const novo = { ...manualSite };
+      delete novo.FITCARD;
+      manualSite = novo;
+      recalcPostoSite();
     }
   }
 
@@ -1305,6 +1407,9 @@
   function handlePostoSiteChange(key: string, e: Event) {
     siteVars[key] = (e.target as HTMLInputElement).value;
     const val = parseMoney(siteVars[key]);
+    if (!isSangriaKey(key)) {
+      manualSite = { ...manualSite, [key]: val };
+    }
     categorias[key] = { ...categorias[key], sistema: categorias[key].sistema, site: val };
     categorias = categorias;
   }
@@ -1701,6 +1806,9 @@
       base.status_caixa = statusCaixa;
       base.status_pagbank = statusPagbank;
       base.status_premmia = statusPremmia;
+      base.pagbank_site = pagbankCats;
+      base.premmia_site = premmiaCats;
+      base.manual_site = manualSite;
     } else if (splitMode) {
       snapshotActiveTurno();
       base.turno = null;
@@ -2073,7 +2181,7 @@
           </label>
           <button
             disabled={readonly}
-            onclick={() => { statusCaixa = "Nenhum arquivo importado"; for (const k of postoCategories) categorias[k].sistema = 0; }}
+            onclick={removerRelatorioCaixa}
             class="inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-accent"
           >
             Remover
@@ -2092,7 +2200,7 @@
           </label>
           <button
             disabled={readonly}
-            onclick={() => { statusPagbank = "Nenhum arquivo importado"; for (const k of postoCategories) { const isSangria = k === "SANGRIA" || (postoLabels[k] || "").toUpperCase() === "SANGRIA"; if (!isSangria) categorias[k].site = 0; } }}
+            onclick={removerRelatorioPagbank}
             class="inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-accent"
           >
             Remover
@@ -2126,7 +2234,7 @@
           </label>
           <button
             disabled={readonly}
-            onclick={() => { statusPremmia = "Nenhum arquivo importado"; premmiaLancamentos = []; premmiaSort = {}; for (const k of postoCategories) { const isSangria = k === "SANGRIA" || (postoLabels[k] || "").toUpperCase() === "SANGRIA"; if (!isSangria) categorias[k].site = 0; } }}
+            onclick={removerRelatorioPremmia}
             class="inline-flex h-8 items-center border px-3 text-sm hover:bg-accent"
           >
             Remover
