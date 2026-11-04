@@ -50,6 +50,7 @@
 
   let contagemTabBehavior = $state<"icone" | "icone_fixo">("icone");
   let serial200Mode = $state<"obrigatorio_todas" | "opcional_geral" | "opcional_todas">("obrigatorio_todas");
+  let restMapeamento = $state<Record<string, string>>({});
 
   type CategoriaFinanceiro = { codigo: string; descricao: string };
   let financeiroCategorias = $state<CategoriaFinanceiro[]>([]);
@@ -220,6 +221,25 @@
   let premmiaLancamentos = $state<any[]>([]);
   let premmiaSort = $state<Record<string, "asc" | "desc" | null>>({});
 
+  // Categorias que tem valor real mas nao tem linha no Cloudfy (sistema 0):
+  // a automacao nao consegue preencher e o usuario corrige manualmente.
+  const restSemSistema = $derived.by(() => {
+    if (tipo !== "restaurante") return [] as any[];
+    const mapeadas = new Set(Object.values(restMapeamento || {}));
+    const considerar = mapeadas.size
+      ? restCategories.filter((key) => mapeadas.has(key))
+      : restCategories;
+    return considerar
+      .filter((key) => key !== "DINHEIRO" && key !== "PIX_CNPJ")
+      .map((key) => ({
+        key,
+        label: restLabels[key],
+        real: Number(categorias[key]?.real || 0),
+        sistema: Number(categorias[key]?.sistema || 0),
+      }))
+      .filter((item) => item.real > 0 && item.sistema <= 0);
+  });
+
   function togglePremmiaSort(key: string) {
     const atual = premmiaSort[key] || null;
     const proximo = atual === null ? "asc" : atual === "asc" ? "desc" : null;
@@ -312,6 +332,8 @@
     await loadModuleSettings();
     if (tipo === "posto") {
       await loadPostoConfig();
+    } else {
+      restMapeamento = await buscarMapeamento();
     }
     initCategories();
     if (conciliacaoId) {
@@ -1477,6 +1499,16 @@
   async function handleAutomacaoLancar(caixa: any, caixaIdx: number | null) {
     const mapping = await buscarMapeamento();
 
+    if (restSemSistema.length > 0) {
+      const nomes = restSemSistema.map((c) => c.label).join(", ");
+      const continuar = confirm(
+        `Sem valor no sistema: ${nomes}. O Cloudfy nao abre linha de conciliacao ` +
+          "para essas categorias e o Auto Lancar nao consegue preenche-las. " +
+          "Corrija manualmente na janela do Cloudfy que ficara aberta. Continuar?",
+      );
+      if (!continuar) return;
+    }
+
     const dinheiroReal = categorias["DINHEIRO"]?.real || 0;
     const dinheiroStr = String(dinheiroReal).replace(".", ",");
     const pixCnpjReal = categorias["PIX_CNPJ"]?.real || 0;
@@ -2312,6 +2344,19 @@
             </button>
           {/if}
         </div>
+        {#if restSemSistema.length > 0}
+          <div class="mb-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800">
+            <p class="font-semibold">
+              Categorias com valor real e sem valor no sistema:
+            </p>
+            <p class="mt-0.5">
+              {restSemSistema.map((c) => `${c.label} (${formatMoney(c.real)})`).join(", ")}.
+              O Cloudfy nao mostra linha de conciliacao para essas categorias, entao o
+              Auto Lancar nao consegue preenche-las. Corrija manualmente no Cloudfy, na
+              janela que fica aberta apos o lancamento.
+            </p>
+          </div>
+        {/if}
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
@@ -2394,6 +2439,7 @@
         onChange={handleContagemChange}
         tabBehavior={contagemTabBehavior}
         serialMode={serial200Mode}
+        mostrarNomes={tipo !== "posto"}
       />
     </div>
 

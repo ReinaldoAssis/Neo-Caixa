@@ -260,6 +260,12 @@ def _serial_required(label: str, serial_mode: str) -> bool:
     return True
 
 
+def _label_padrao(label: object) -> bool:
+    """Nome automatico de aba: vazio ou apenas numero ("1", "2", ...)."""
+    texto = str(label or "").strip()
+    return not texto or texto.isdigit()
+
+
 def validate_contagens(
     contagens: list[dict], serial_mode: str = "obrigatorio_todas"
 ) -> list[str]:
@@ -270,6 +276,16 @@ def validate_contagens(
         qty_200 = int(notas.get("200", 0) or 0)
         if qty_200 <= 0:
             continue
+        if (
+            serial_mode == "obrigatorio_todas"
+            and label != "Geral"
+            and _label_padrao(label)
+        ):
+            errors.append(
+                f'{label or "Contagem"}: renomeie a aba que tem notas de R$ 200 '
+                "para um nome proprio (operador/pessoa); o nome padrao numerico "
+                "nao vale com o serial obrigatorio"
+            )
         if not _serial_required(label, serial_mode):
             continue
         if not serials_valid(c.get("seriais_200", []), qty_200):

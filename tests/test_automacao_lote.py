@@ -143,6 +143,24 @@ def test_parse_dinheiro_rows():
     assert aut.parse_dinheiro_rows([]) == ""
 
 
+# ─── Lancamento de cartoes ───────────────────────────────────────
+
+def test_valor_conciliacao_preenche_zero_quando_sistema_tem_valor():
+    assert aut.valor_conciliacao_categoria({"sistema": 100.0, "real": 0.0}) == "0,00"
+    assert aut.valor_conciliacao_categoria({"sistema": 10.0, "real": 0}) == "0,00"
+
+
+def test_valor_conciliacao_usa_real_quando_existe():
+    assert aut.valor_conciliacao_categoria({"sistema": 0.0, "real": 50.0}) == "50,00"
+    assert aut.valor_conciliacao_categoria({"sistema": 10.0, "real": 12.5}) == "12,50"
+
+
+def test_valor_conciliacao_ignora_categoria_sem_valores():
+    assert aut.valor_conciliacao_categoria({"sistema": 0.0, "real": 0.0}) is None
+    assert aut.valor_conciliacao_categoria({}) is None
+    assert aut.valor_conciliacao_categoria(None) is None
+
+
 # ─── Config ───────────────────────────────────────────────────────
 
 class _FakeDB:

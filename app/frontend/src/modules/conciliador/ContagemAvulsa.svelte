@@ -176,6 +176,7 @@
         bind:contagens={contagens}
         tabBehavior={contagemTabBehavior}
         serialMode={serial200Mode}
+        mostrarNomes={tipo !== "posto"}
       />
     </div>
 

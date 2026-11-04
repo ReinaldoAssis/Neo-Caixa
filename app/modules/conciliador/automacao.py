@@ -1023,6 +1023,21 @@ async def _abrir_conciliacao(page, context):
     return conciliacao
 
 
+def valor_conciliacao_categoria(categoria: dict | None) -> str | None:
+    """Valor real formatado para a conciliacao do cartao.
+
+    Zero e valor valido: quando a categoria tem valor no sistema mas nao teve
+    venda real, o campo precisa ser preenchido com ``0,00``. Sem valor no
+    sistema nem no real, nao ha o que lancar.
+    """
+    dados = categoria or {}
+    real = round(float(dados.get("real", 0) or 0), 2)
+    sistema = round(float(dados.get("sistema", 0) or 0), 2)
+    if not real and not sistema:
+        return None
+    return f"{real:.2f}".replace(".", ",")
+
+
 async def _lancar_pagamentos(page, mapeamento: dict, categorias: dict) -> int:
     subtipos = await page.evaluate("""
         () => {
@@ -1044,10 +1059,9 @@ async def _lancar_pagamentos(page, mapeamento: dict, categorias: dict) -> int:
         cat_key = mapeamento.get(subtipo, "")
         if not cat_key or cat_key not in categorias:
             continue
-        real_val = categorias[cat_key].get("real", 0)
-        if not real_val:
+        valor_str = valor_conciliacao_categoria(categorias.get(cat_key))
+        if valor_str is None:
             continue
-        valor_str = str(real_val).replace(".", ",")
         inp = rows.nth(int(item.get("i", 0))).locator('input[ng-model*="CC078_VL_VNDPOS"]')
         if await inp.count() == 0:
             continue

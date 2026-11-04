@@ -7,9 +7,10 @@
     onChange?: () => void;
     tabBehavior?: "icone" | "icone_fixo";
     serialMode?: "obrigatorio_todas" | "opcional_geral" | "opcional_todas";
+    mostrarNomes?: boolean;
   }
 
-  let { readonly = false, contagens = $bindable([] as any[]), onChange, tabBehavior = "icone", serialMode = "obrigatorio_todas" }: Props = $props();
+  let { readonly = false, contagens = $bindable([] as any[]), onChange, tabBehavior = "icone", serialMode = "obrigatorio_todas", mostrarNomes = true }: Props = $props();
 
   const denominations = [200, 100, 50, 20, 10, 5, 2];
   let activeTab = $state(0);
@@ -52,6 +53,19 @@
   }
 
   const activeContagem = $derived(contagens[activeTab]);
+
+  // Com serial obrigatorio, a aba que tem nota de R$ 200 precisa de nome
+  // proprio; o nome padrao gerado ("1", "2", ...) nao identifica a nota.
+  function precisaNomeProprio(contagem: any): boolean {
+    if (serialMode !== "obrigatorio_todas") return false;
+    const qty = parseInt(contagem?.notas?.["200"] || "0") || 0;
+    if (qty <= 0) return false;
+    const label = String(contagem?.label ?? "").trim();
+    if (label === "Geral") return false;
+    return !label || /^\d+$/.test(label);
+  }
+
+  const abasParaRenomear = $derived(contagens.filter(precisaNomeProprio));
 
   function tabClass(idx: number): string {
     const base = "inline-flex items-center gap-1 border border-b-0 px-3 py-1 text-sm transition-colors";
@@ -254,7 +268,8 @@
       {#each contagens as contagem, idx}
         <button
           onclick={() => selectTab(idx)}
-          class={tabClass(idx)}
+          class={tabClass(idx) + (precisaNomeProprio(contagem) ? " ring-1 ring-red-400 text-red-700" : "")}
+          title={precisaNomeProprio(contagem) ? "Renomeie esta aba: ela tem nota de R$ 200" : undefined}
         >
           {contagem.label}
         </button>
@@ -279,6 +294,15 @@
       </button>
     {/if}
   </div>
+
+  {#if abasParaRenomear.length > 0}
+    <p class="text-xs text-red-600">
+      Renomeie {abasParaRenomear.length > 1 ? "as abas" : "a aba"}
+      {abasParaRenomear.map((c: any) => `"${c.label}"`).join(", ")}: com serial
+      obrigatorio, a aba que tem nota de R$ 200 nao pode manter o nome padrao
+      (numero). Use um nome proprio, como o operador ou a pessoa.
+    </p>
+  {/if}
 
   {#if activeContagem}
     <div class="border p-3">
@@ -380,10 +404,10 @@
       <div class="mt-2">
         <p class="mb-1 text-xs text-muted-foreground">
           {#if activeContagem.label !== "Geral" || activeContagem.editado}
-            Seriais e nomes das notas de R$ 200 ({activeContagem.seriais_200?.length || 0})
+            {mostrarNomes ? "Seriais e nomes" : "Seriais"} das notas de R$ 200 ({activeContagem.seriais_200?.length || 0})
             {serialRequired(activeContagem) ? "" : "(serial opcional)"}:
           {:else}
-            Seriais e nomes somados de todas as contagens ({activeContagem.seriais_200?.length || 0}):
+            {mostrarNomes ? "Seriais e nomes somados" : "Seriais somados"} de todas as contagens ({activeContagem.seriais_200?.length || 0}):
           {/if}
         </p>
         {#if (activeContagem.seriais_200 || []).length > 0}
@@ -400,26 +424,28 @@
                     title="Serial da nota de R$ 200"
                     class="w-16 border bg-background px-2 py-0.5 text-sm"
                   />
-                  <input
-                    type="text"
-                    value={activeContagem.nomes_200?.[si] || ""}
-                    oninput={(e) => {
-                      if (!Array.isArray(activeContagem.nomes_200)) {
-                        activeContagem.nomes_200 = [];
-                      }
-                      activeContagem.nomes_200[si] = (e.target as HTMLInputElement).value;
-                      contagens = [...contagens];
-                    }}
-                    disabled={readonly}
-                    maxlength={60}
-                    placeholder="Nome (opcional)"
-                    title="Nome/apelido da nota de R$ 200"
-                    class="w-44 border bg-background px-2 py-0.5 text-sm"
-                  />
+                  {#if mostrarNomes}
+                    <input
+                      type="text"
+                      value={activeContagem.nomes_200?.[si] || ""}
+                      oninput={(e) => {
+                        if (!Array.isArray(activeContagem.nomes_200)) {
+                          activeContagem.nomes_200 = [];
+                        }
+                        activeContagem.nomes_200[si] = (e.target as HTMLInputElement).value;
+                        contagens = [...contagens];
+                      }}
+                      disabled={readonly}
+                      maxlength={60}
+                      placeholder="Nome (opcional)"
+                      title="Nome/apelido da nota de R$ 200"
+                      class="w-44 border bg-background px-2 py-0.5 text-sm"
+                    />
+                  {/if}
                 </div>
               {:else}
                 <span class="bg-muted px-2 py-0.5 text-sm">
-                  {serial}{activeContagem.nomes_200?.[si] ? ` - ${activeContagem.nomes_200[si]}` : ""}
+                  {serial}{mostrarNomes && activeContagem.nomes_200?.[si] ? ` - ${activeContagem.nomes_200[si]}` : ""}
                 </span>
               {/if}
             {/each}
