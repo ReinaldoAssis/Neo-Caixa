@@ -11,6 +11,7 @@
     cupom: string;
     qtde_itens: string;
     valor: number;
+    percentual?: number;
     cliente: string;
     forma_pagamento: string;
     conferido: boolean;
@@ -237,7 +238,7 @@
       </div>
     {:else if filtrados.length === 0}
       <div class="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
-        <p>Nenhum desconto de venda a prazo encontrado.</p>
+        <p>Nenhum desconto de venda a prazo ou acima de 10% encontrado.</p>
         <p class="text-xs">Clique em "Atualizar" para puxar os dados do Cloudfy.</p>
       </div>
     {:else}
@@ -251,6 +252,7 @@
             <th class="px-3 py-2">Cupom</th>
             <th class="px-3 py-2 text-right">Qtde. itens</th>
             <th class="px-3 py-2 text-right">Valor</th>
+            <th class="px-3 py-2 text-right">Desconto %</th>
             <th class="px-3 py-2">Cliente</th>
             <th class="px-3 py-2">Forma de pagamento</th>
             <th class="px-3 py-2 text-center">Conferido</th>
@@ -271,6 +273,9 @@
               <td class="px-3 py-2">{d.cupom}</td>
               <td class="px-3 py-2 text-right">{d.qtde_itens}</td>
               <td class="px-3 py-2 text-right whitespace-nowrap">{formatMoney(d.valor)}</td>
+              <td class="px-3 py-2 text-right whitespace-nowrap">
+                {d.percentual ? `${d.percentual.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%` : "-"}
+              </td>
               <td class="px-3 py-2">{d.cliente || "-"}</td>
               <td class="px-3 py-2">{d.forma_pagamento}</td>
               <td class="px-3 py-2 text-center">

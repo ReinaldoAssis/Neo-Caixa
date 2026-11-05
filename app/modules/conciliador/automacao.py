@@ -86,6 +86,7 @@ class Desconto:
     valor: float = 0.0
     cliente: str = ""
     forma_pagamento: str = ""
+    percentual: float = 0.0
 
 
 # ─── Helpers ───────────────────────────────────────────────────────
@@ -131,7 +132,49 @@ _HEADER_ALIASES = {
     "valor": "valor",
     "cliente": "cliente",
     "forma de pagamento": "forma_pagamento",
+    "percentual": "percentual",
+    "percentual de desconto": "percentual",
+    "desconto (%)": "percentual",
+    "desconto %": "percentual",
+    "% desconto": "percentual",
+    "valor total": "valor_total",
+    "total": "valor_total",
+    "valor bruto": "valor_total",
+    "valor da venda": "valor_total",
+    "valor original": "valor_total",
 }
+
+
+_PERCENT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
+
+
+def _percentual_texto(texto: str) -> float:
+    """Maior percentual citado no texto do motivo (ex.: 'DESCONTO (15%)')."""
+    valores = []
+    for achado in _PERCENT_RE.findall(str(texto or "")):
+        try:
+            valores.append(float(achado.replace(",", ".")))
+        except ValueError:
+            continue
+    return round(max(valores), 2) if valores else 0.0
+
+
+def _parse_percent(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        numero = round(float(value), 2)
+        # Excel costuma exportar percentual formatado como fracao (0.15 = 15%).
+        if 0 < numero <= 1:
+            numero = round(numero * 100, 2)
+        return numero
+    texto = str(value).strip().replace("%", "").replace(" ", "")
+    if "," in texto:
+        texto = texto.replace(".", "").replace(",", ".")
+    try:
+        return round(float(texto), 2)
+    except ValueError:
+        return 0.0
 
 
 def _map_header(name: str) -> str | None:
@@ -142,11 +185,32 @@ def _map_header(name: str) -> str | None:
         return "qtde_itens"
     if normalized.startswith("forma"):
         return "forma_pagamento"
+    if normalized.startswith("percentual") or normalized.startswith("%"):
+        return "percentual"
+    for prefixo, campo in (
+        ("cupom", "cupom"),
+        ("data", "data"),
+        ("motivo", "motivo"),
+        ("tipo", "tipo"),
+        ("caixa", "caixa"),
+        ("cliente", "cliente"),
+    ):
+        if normalized.startswith(prefixo):
+            return campo
+    if normalized.startswith("valor total") or normalized.startswith("valor bruto"):
+        return "valor_total"
+    if normalized.startswith("valor"):
+        return "valor"
     return None
 
 
 def parse_descontos_xlsx(path: str) -> list[dict[str, Any]]:
-    """Le o XLSX exportado pelo Cloudfy e retorna apenas cupons 'Venda a prazo'."""
+    """Le o XLSX do Cloudfy.
+
+    Mantem cupons de ``Venda a prazo`` e tambem qualquer cupom cujo desconto
+    seja maior que 10% (percentual lido da coluna propria ou do texto do
+    motivo, ex.: ``DESCONTO BIU (15%)``).
+    """
     import openpyxl
 
     workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
@@ -155,6 +219,9 @@ def parse_descontos_xlsx(path: str) -> list[dict[str, Any]]:
 
     header: dict[str, int] = {}
     parsed: list[dict[str, Any]] = []
+    lidas = 0
+    descartadas = 0
+    formas: dict[str, int] = {}
 
     for raw_row in rows:
         cells = [_cell_str(c) for c in raw_row]
@@ -171,6 +238,8 @@ def parse_descontos_xlsx(path: str) -> list[dict[str, Any]]:
         if not any(cells):
             continue
 
+        lidas += 1
+
         def get(field_name: str) -> Any:
             idx = header.get(field_name)
             if idx is None or idx >= len(raw_row):
@@ -178,22 +247,49 @@ def parse_descontos_xlsx(path: str) -> list[dict[str, Any]]:
             return raw_row[idx]
 
         forma = _cell_str(get("forma_pagamento"))
-        if forma.strip().lower() != FORMA_VENDA_A_PRAZO:
+        forma_norm = _norm(forma).lower()
+        formas[forma_norm or "(vazio)"] = formas.get(forma_norm or "(vazio)", 0) + 1
+
+        motivo = _cell_str(get("motivo"))
+        valor = _cell_float(get("valor"))
+        percentual = _parse_percent(get("percentual")) or _percentual_texto(motivo)
+        if not percentual:
+            total_venda = _cell_float(get("valor_total"))
+            if total_venda > 0 and valor:
+                percentual = round(valor / total_venda * 100, 2)
+
+        prazo = FORMA_VENDA_A_PRAZO in forma_norm
+        if not prazo and percentual <= 10:
+            descartadas += 1
             continue
 
         parsed.append(asdict(Desconto(
             tipo=_cell_str(get("tipo")),
-            motivo=_cell_str(get("motivo")),
+            motivo=motivo,
             data=_cell_str(get("data")),
             caixa=_cell_str(get("caixa")),
             cupom=_cell_str(get("cupom")),
             qtde_itens=_cell_str(get("qtde_itens")),
-            valor=_cell_float(get("valor")),
+            valor=valor,
             cliente=_cell_str(get("cliente")),
             forma_pagamento=forma,
+            percentual=percentual,
         )))
 
     workbook.close()
+
+    logger.info(
+        "[descontos] %s linhas, %s cupons, %s descartados (formas=%s)",
+        lidas,
+        len(parsed),
+        descartadas,
+        formas,
+    )
+    if lidas and not parsed:
+        logger.warning(
+            "[descontos] nenhum cupom mantido; confira colunas do relatorio "
+            "e os motivos/formas acima"
+        )
     return parsed
 
 
@@ -461,6 +557,16 @@ JS_MENU_DESCONTO = """
 () => !!document.querySelector('.selectize-control')
     || Array.from(document.querySelectorAll('a'))
         .some(a => a.textContent.includes('desconto'))
+"""
+
+JS_OPCAO_SELECTIZE = """
+(texto) => {
+    const alvo = Array.from(document.querySelectorAll('.selectize-dropdown .option'))
+        .find((o) => (o.textContent || '').toLowerCase().includes(texto.toLowerCase()));
+    if (!alvo) return false;
+    alvo.click();
+    return true;
+}
 """
 
 JS_MOSTRAR_TODOS = """
@@ -1846,15 +1952,38 @@ async def abrir_relatorio_descontos(page, context, usuario: str, senha: str):
     return alvo
 
 
-async def _selecionar_relatorio_por_cupom(page) -> None:
-    select = page.locator(".selectize-control .selectize-input")
-    await select.first.click()
+async def _selecionar_relatorio_por_cupom(page) -> bool:
+    select = page.locator(".selectize-control .selectize-input").first
+    await select.click()
+    try:
+        await page.evaluate(JS_OPCAO_SELECTIZE, RELATORIO_POR_CUPOM)
+    except Exception:
+        logger.warning("[automacao] falha ao clicar na opcao por cupom via DOM")
+
+    try:
+        await page.wait_for_timeout(300)
+        texto = (await select.evaluate("(el) => el.textContent || ''")).lower()
+    except Exception:
+        texto = ""
+    if "cupom" in texto:
+        return True
+
     opcao = page.locator(".selectize-dropdown .option", has_text=RELATORIO_POR_CUPOM)
     try:
         await opcao.first.wait_for(timeout=TIMEOUT_CURTO_MS)
-        await opcao.first.click()
+        await _clicar_js(opcao.first)
     except Exception:
         logger.warning("[automacao] opcao 'Relatorio por cupom' nao encontrada")
+        return False
+
+    try:
+        texto = (await select.evaluate("(el) => el.textContent || ''")).lower()
+    except Exception:
+        texto = ""
+    if "cupom" in texto:
+        return True
+    logger.warning("[automacao] tipo de relatorio continua: %s", texto)
+    return False
 
 
 async def baixar_relatorio_descontos(page, usuario: str, senha: str) -> list[dict[str, Any]]:
@@ -1862,7 +1991,7 @@ async def baixar_relatorio_descontos(page, usuario: str, senha: str) -> list[dic
     inicio = time.perf_counter()
     alvo = await abrir_relatorio_descontos(page, context, usuario, senha)
 
-    botao = alvo.locator('a:has-text("Excel")')
+    botao = alvo.locator('a:has-text("Excel"), button:has-text("Excel")')
     try:
         await botao.first.wait_for(timeout=TIMEOUT_PADRAO_MS)
     except Exception as exc:

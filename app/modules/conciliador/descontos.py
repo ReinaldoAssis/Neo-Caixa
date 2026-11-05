@@ -48,6 +48,7 @@ def _to_float(value: Any) -> float:
 def normalize_desconto(raw: dict[str, Any]) -> dict[str, Any]:
     data = str(raw.get("data", "")).strip()
     cupom = str(raw.get("cupom", "")).strip()
+    percentual = str(raw.get("percentual", "") or "").replace("%", "").strip()
     return {
         "tipo": str(raw.get("tipo", "")).strip(),
         "motivo": str(raw.get("motivo", "")).strip(),
@@ -56,6 +57,7 @@ def normalize_desconto(raw: dict[str, Any]) -> dict[str, Any]:
         "cupom": cupom,
         "qtde_itens": str(raw.get("qtde_itens", "")).strip(),
         "valor": _to_float(raw.get("valor")),
+        "percentual": _to_float(percentual),
         "cliente": str(raw.get("cliente") or "").strip(),
         "forma_pagamento": str(raw.get("forma_pagamento", "")).strip(),
         "chave": chave_desconto(data, cupom),
@@ -66,7 +68,7 @@ def normalize_desconto(raw: dict[str, Any]) -> dict[str, Any]:
 
 def upsert_descontos(database, rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Insere somente cupons novos (dedupe por chave). Nunca sobrescreve."""
-    existentes = {d.get("chave") for d in database.all(TABLE)}
+    existentes = {d.get("chave"): d for d in database.all(TABLE)}
     inseridos = 0
     ignorados = 0
 
@@ -75,11 +77,20 @@ def upsert_descontos(database, rows: list[dict[str, Any]]) -> dict[str, Any]:
         if not doc["data"] or not doc["cupom"]:
             ignorados += 1
             continue
-        if doc["chave"] in existentes:
+        atual = existentes.get(doc["chave"])
+        if atual is not None:
+            # Backfill do percentual em registros antigos, sem tocar no
+            # restante (conferido/valor) do cupom ja existente.
+            if not atual.get("percentual") and doc.get("percentual"):
+                database.update(
+                    TABLE,
+                    _doc_id(atual),
+                    dict(atual, percentual=doc["percentual"]),
+                )
             ignorados += 1
             continue
         database.insert(TABLE, doc)
-        existentes.add(doc["chave"])
+        existentes[doc["chave"]] = doc
         inseridos += 1
 
     return {
