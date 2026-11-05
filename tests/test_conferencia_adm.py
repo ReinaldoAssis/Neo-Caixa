@@ -128,6 +128,79 @@ def test_conferencia_sinaliza_extrato_inconsistente(tmp_path):
     assert out["soma_linhas"] == 120.0
 
 
+def test_conferencia_usa_contagem_e_ignora_notas_de_despesa(tmp_path):
+    db = _db(tmp_path)
+    # dinheiro_real inclui o ajuste das notas de despesa; a conferencia deve
+    # usar somente as cedulas contadas.
+    _caixa(
+        db,
+        dinheiro=1315.0,
+        contagens=[{"label": "Geral", "total": 1063.0, "moedas": 20.0}],
+    )
+
+    out = conferencia_adm.avaliar(db, "2026-10-26", _extrato(1043.0))
+    assert out["caixa_total"] == 1043.0
+    assert out["diferenca"] == 0.0
+    assert out["status"] == conferencia_adm.STATUS_BATE
+
+
+def test_modo_completo_usa_vl_total(tmp_path):
+    db = _db(tmp_path)
+    _caixa(db, dinheiro=100.0)
+    extrato = _extrato(150.0, [
+        {"descricao": "A", "valor": 100.0},
+        {"descricao": "B", "valor": 50.0},
+    ])
+    out = conferencia_adm.avaliar(db, "2026-10-26", extrato)
+    assert out["modo"] == "completo"
+    assert out["total_comparado"] == 150.0
+    assert out["selecionadas"] == [0, 1]
+
+
+def test_modo_selecionar_usa_somente_itens_marcados(tmp_path):
+    db = _db(tmp_path)
+    _caixa(db, dinheiro=100.0)
+    extrato = _extrato(150.0, [
+        {"descricao": "A", "valor": 100.0},
+        {"descricao": "B", "valor": 50.0},
+    ])
+
+    out = conferencia_adm.avaliar(
+        db, "2026-10-26", extrato, modo="selecionar", selecionadas=[0]
+    )
+    assert out["modo"] == "selecionar"
+    assert out["selecionadas"] == [0]
+    assert out["total_comparado"] == 100.0
+    assert out["extrato_total"] == 150.0
+    assert out["diferenca"] == 0.0
+    assert out["status"] == conferencia_adm.STATUS_BATE
+
+
+def test_modo_selecionar_ignora_indices_invalidos(tmp_path):
+    db = _db(tmp_path)
+    _caixa(db, dinheiro=50.0)
+    extrato = _extrato(150.0, [{"descricao": "A", "valor": 100.0}])
+
+    out = conferencia_adm.avaliar(
+        db, "2026-10-26", extrato, modo="selecionar", selecionadas=[0, 9, "x"]
+    )
+    assert out["selecionadas"] == [0]
+    assert out["total_comparado"] == 100.0
+
+
+def test_resumo_caixa_moedas(tmp_path):
+    db = _db(tmp_path)
+    _caixa(
+        db,
+        dinheiro=150.0,
+        contagens=[{"label": "Geral", "total": 150.0, "moedas": 20.0}],
+    )
+    resumo = conferencia_adm.resumo_caixa(db, "2026-10-26")
+    assert resumo["caixa_total"] == 130.0
+    assert resumo["caixa_moedas"] == 20.0
+    assert resumo["caixa_qtd"] == 1
+
+
 def test_historico_guarda_e_lista(tmp_path):
     db = _db(tmp_path)
     _caixa(db, dinheiro=150.0)

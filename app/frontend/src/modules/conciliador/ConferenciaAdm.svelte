@@ -22,8 +22,11 @@
     doc_id?: string;
     data: string;
     executado_em: string;
+    modo?: "completo" | "selecionar" | string;
+    selecionadas?: number[];
     extrato_total: number;
     extrato_total_texto: string;
+    total_comparado?: number;
     linhas: LinhaExtrato[];
     soma_linhas: number;
     extrato_inconsistente: boolean;
@@ -33,6 +36,18 @@
     caixa_ids: string[];
     diferenca: number | null;
     status: "bate" | "nao_bate" | "sem_caixa" | string;
+  }
+
+  interface ExtratoPendente {
+    data: string;
+    extrato_total: number;
+    extrato_total_texto: string;
+    linhas: LinhaExtrato[];
+    soma_linhas: number;
+    extrato_inconsistente: boolean;
+    caixa_total: number;
+    caixa_moedas?: number;
+    caixa_qtd: number;
   }
 
   interface Props {
@@ -49,12 +64,27 @@
   }
 
   let data = $state(localISO(-1));
+  let modo = $state<"completo" | "selecionar">("completo");
   let loading = $state(false);
   let carregandoHistorico = $state(true);
   let erro = $state("");
   let resultado = $state<Conferencia | null>(null);
+  let pendente = $state<ExtratoPendente | null>(null);
+  let selecionadas = $state<number[]>([]);
   let historico = $state<Conferencia[]>([]);
   let expandida = $state<string | null>(null);
+
+  const totalSelecionado = $derived(
+    pendente
+      ? Math.round(
+          pendente.linhas.reduce(
+            (soma, linha, indice) =>
+              selecionadas.includes(indice) ? soma + Number(linha.valor || 0) : soma,
+            0,
+          ) * 100,
+        ) / 100
+      : 0,
+  );
 
   onMount(loadHistorico);
 
@@ -81,17 +111,84 @@
     loading = true;
     erro = "";
     resultado = null;
+    pendente = null;
+    selecionadas = [];
     try {
       const res = await fetch("/api/conciliador/conferencia-adm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data }),
+        body: JSON.stringify({ data, modo }),
       });
       const corpo = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(corpo.detail || "Erro ao conferir o extrato.");
       }
+      if (modo === "selecionar" && corpo.aguardando_selecao) {
+        pendente = corpo;
+        selecionadas = (corpo.linhas || []).map((_: LinhaExtrato, i: number) => i);
+        expandida = null;
+        return;
+      }
       resultado = corpo;
+      expandida = null;
+      await loadHistorico();
+    } catch (e: any) {
+      erro = e?.message || "Erro de conexao.";
+    } finally {
+      loading = false;
+    }
+  }
+
+  function alternarModo(novo: "completo" | "selecionar") {
+    if (modo === novo) return;
+    modo = novo;
+    resultado = null;
+    pendente = null;
+    selecionadas = [];
+    erro = "";
+  }
+
+  function alternarItem(indice: number) {
+    selecionadas = selecionadas.includes(indice)
+      ? selecionadas.filter((i) => i !== indice)
+      : [...selecionadas, indice].sort((a, b) => a - b);
+  }
+
+  function alternarTodos() {
+    if (!pendente) return;
+    selecionadas =
+      selecionadas.length === pendente.linhas.length
+        ? []
+        : pendente.linhas.map((_, i) => i);
+  }
+
+  async function compararSelecionados() {
+    if (!pendente) return;
+    loading = true;
+    erro = "";
+    try {
+      const res = await fetch("/api/conciliador/conferencia-adm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          data: pendente.data || data,
+          modo: "selecionar",
+          selecionadas,
+          extrato: {
+            total: pendente.extrato_total,
+            total_texto: pendente.extrato_total_texto,
+            linhas: pendente.linhas,
+            soma_linhas: pendente.soma_linhas,
+            extrato_inconsistente: pendente.extrato_inconsistente,
+          },
+        }),
+      });
+      const corpo = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(corpo.detail || "Erro ao comparar os itens.");
+      }
+      resultado = corpo;
+      pendente = null;
       expandida = null;
       await loadHistorico();
     } catch (e: any) {
@@ -168,7 +265,7 @@
     <div>
       <h1 class="text-lg font-bold">Conferencia ADM</h1>
       <p class="text-sm text-muted-foreground">
-        Compara o extrato CAIXA ADM com o dinheiro do caixa restaurante.
+        Compara o extrato CAIXA ADM com o dinheiro em especie do caixa restaurante.
       </p>
     </div>
   </div>
@@ -185,6 +282,26 @@
             class="rounded-md border bg-background px-3 py-1.5 text-sm"
           />
         </label>
+        <div class="flex items-center gap-1 rounded-md border p-0.5 text-xs">
+          <button
+            type="button"
+            onclick={() => alternarModo("completo")}
+            class="rounded px-2 py-1 {modo === "completo"
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:bg-accent"}"
+          >
+            Extrato completo
+          </button>
+          <button
+            type="button"
+            onclick={() => alternarModo("selecionar")}
+            class="rounded px-2 py-1 {modo === "selecionar"
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:bg-accent"}"
+          >
+            Selecionar itens
+          </button>
+        </div>
         <button
           type="button"
           onclick={conferir}
@@ -211,6 +328,108 @@
       {/if}
     </div>
 
+    {#if pendente}
+      {@const todasMarcadas =
+        pendente.linhas.length > 0 && selecionadas.length === pendente.linhas.length}
+      <div class="rounded-lg border p-4">
+        <div class="flex flex-wrap items-center gap-3">
+          <div>
+            <p class="text-sm font-semibold">Selecione os itens do extrato CAIXA ADM</p>
+            <p class="text-xs text-muted-foreground">
+              Caixa contado: {formatMoney(pendente.caixa_total)}
+              ({pendente.caixa_qtd} caixa(s) na data) · Extrato:
+              {formatMoney(pendente.extrato_total)}
+            </p>
+          </div>
+          <button
+            type="button"
+            onclick={alternarTodos}
+            class="rounded-md border px-3 py-1 text-xs hover:bg-accent"
+          >
+            {todasMarcadas ? "Desmarcar todos" : "Marcar todos"}
+          </button>
+          <span class="ml-auto text-sm font-medium">
+            Selecionado: {formatMoney(totalSelecionado)}
+          </span>
+        </div>
+
+        <div class="mt-3 max-h-80 overflow-auto rounded-md border">
+          <table class="w-full text-sm">
+            <thead class="sticky top-0 bg-muted/60">
+              <tr class="border-b text-left text-muted-foreground">
+                <th class="w-10 px-3 py-2"></th>
+                <th class="px-3 py-2 font-medium">Descricao</th>
+                <th class="px-3 py-2 font-medium">Data</th>
+                <th class="px-3 py-2 text-right font-medium">Valor</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each pendente.linhas as linha, indice}
+                <tr class="border-t">
+                  <td class="px-3 py-1.5">
+                    <input
+                      type="checkbox"
+                      checked={selecionadas.includes(indice)}
+                      onchange={() => alternarItem(indice)}
+                    />
+                  </td>
+                  <td class="px-3 py-1.5">{linha.descricao}</td>
+                  <td class="px-3 py-1.5 text-muted-foreground">{linha.data || "-"}</td>
+                  <td class="px-3 py-1.5 text-right tabular-nums">
+                    {formatMoney(linha.valor)}
+                  </td>
+                </tr>
+              {:else}
+                <tr>
+                  <td colspan="4" class="px-3 py-3 text-muted-foreground">
+                    Nenhuma linha no extrato.
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+
+        {#if pendente.extrato_inconsistente}
+          <p class="mt-2 text-xs text-amber-700">
+            Soma das linhas {formatMoney(pendente.soma_linhas)} difere do VL_TOTAL
+            {formatMoney(pendente.extrato_total)}.
+          </p>
+        {/if}
+
+        <div class="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onclick={compararSelecionados}
+            disabled={loading || selecionadas.length === 0}
+            class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {#if loading}
+              <Loader2 class="h-4 w-4 animate-spin" />
+              Comparando...
+            {:else}
+              <CheckCircle2 class="h-4 w-4" />
+              Comparar selecionados
+            {/if}
+          </button>
+          <button
+            type="button"
+            onclick={() => {
+              pendente = null;
+              selecionadas = [];
+            }}
+            disabled={loading}
+            class="inline-flex h-9 items-center rounded-md border px-4 text-sm hover:bg-accent disabled:opacity-50"
+          >
+            Cancelar
+          </button>
+          <span class="text-xs text-muted-foreground">
+            Só os itens marcados entram na comparação.
+          </span>
+        </div>
+      </div>
+    {/if}
+
     {#if resultado}
       {@const classe = statusClass(resultado.status)}
       <div class="rounded-lg border p-4 {classe}">
@@ -233,9 +452,16 @@
               </p>
             {:else}
               <p class="text-sm">
-                Extrato {formatMoney(resultado.extrato_total)} × caixa em especie
-                {formatMoney(resultado.caixa_total)} = diferenca
-                {formatDiferenca(resultado.diferenca)}.
+                {#if resultado.modo === "selecionar"}
+                  Itens selecionados {formatMoney(resultado.total_comparado ?? 0)}
+                  (de {formatMoney(resultado.extrato_total)}) × caixa em especie
+                  {formatMoney(resultado.caixa_total)} = diferenca
+                  {formatDiferenca(resultado.diferenca)}.
+                {:else}
+                  Extrato {formatMoney(resultado.extrato_total)} × caixa em especie
+                  {formatMoney(resultado.caixa_total)} = diferenca
+                  {formatDiferenca(resultado.diferenca)}.
+                {/if}
               </p>
             {/if}
           </div>
@@ -244,8 +470,21 @@
 
       <div class="grid gap-3 sm:grid-cols-4">
         <div class="rounded-md border p-3">
-          <p class="text-xs text-muted-foreground">Extrato ADM</p>
-          <p class="text-lg font-semibold">{formatMoney(resultado.extrato_total)}</p>
+          <p class="text-xs text-muted-foreground">
+            {resultado.modo === "selecionar" ? "Itens selecionados" : "Extrato ADM"}
+          </p>
+          <p class="text-lg font-semibold">
+            {formatMoney(
+              resultado.modo === "selecionar"
+                ? (resultado.total_comparado ?? 0)
+                : resultado.extrato_total,
+            )}
+          </p>
+          {#if resultado.modo === "selecionar"}
+            <p class="text-xs text-muted-foreground">
+              de {formatMoney(resultado.extrato_total)}
+            </p>
+          {/if}
         </div>
         <div class="rounded-md border p-3">
           <p class="text-xs text-muted-foreground">Caixa em especie (sem moedas)</p>
@@ -344,8 +583,18 @@
                 <span class="rounded px-2 py-0.5 text-[10px] font-medium {statusClass(item.status)}">
                   {statusLabel(item.status)}
                 </span>
+                {#if item.modo === "selecionar"}
+                  <span class="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    {(item.selecionadas || []).length} itens
+                  </span>
+                {/if}
                 <span class="ml-auto text-xs text-muted-foreground">
-                  Extrato {formatMoney(item.extrato_total)} · Caixa
+                  {item.modo === "selecionar" ? "Itens" : "Extrato"}
+                  {formatMoney(
+                    item.modo === "selecionar"
+                      ? (item.total_comparado ?? 0)
+                      : item.extrato_total,
+                  )} · Caixa
                   {formatMoney(item.caixa_total)} · Dif.
                   {formatDiferenca(item.diferenca)}
                 </span>
@@ -365,9 +614,17 @@
                   {/if}
                   <table class="w-full text-xs">
                     <tbody>
-                      {#each item.linhas as linha}
-                        <tr class="border-b last:border-b-0">
-                          <td class="py-1">{linha.descricao}</td>
+                      {#each item.linhas as linha, indice}
+                        {@const usada =
+                          item.modo !== "selecionar" ||
+                          (item.selecionadas || []).includes(indice)}
+                        <tr class="border-b last:border-b-0" class:opacity-40={!usada}>
+                          <td class="py-1">
+                            {#if item.modo === "selecionar"}
+                              <span class="mr-1 text-primary">{usada ? "✓" : "·"}</span>
+                            {/if}
+                            {linha.descricao}
+                          </td>
                           <td class="py-1 text-right tabular-nums">
                             {formatMoney(linha.valor)}
                           </td>

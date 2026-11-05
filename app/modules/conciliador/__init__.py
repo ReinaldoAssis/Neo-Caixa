@@ -63,6 +63,7 @@ from app.modules.conciliador.conferencia_adm import (
     avaliar as avaliar_conferencia_adm,
     listar as listar_conferencias_adm,
     registrar as registrar_conferencia_adm,
+    resumo_caixa,
 )
 from app.modules.conciliador.financeiro import (
     normalizar_despesas,
@@ -918,6 +919,27 @@ async def conferencia_adm_executar(data: dict):
             status_code=400, detail="Informe a data no formato YYYY-MM-DD."
         )
 
+    modo = str(data.get("modo") or "completo").strip()
+    if modo not in ("completo", "selecionar"):
+        raise HTTPException(
+            status_code=400, detail="modo invalido. Use 'completo' ou 'selecionar'."
+        )
+
+    # Segunda etapa do modo "selecionar": o extrato ja foi lido e o usuario
+    # escolheu os itens; nao abre o Cloudfy de novo.
+    extrato = data.get("extrato")
+    if modo == "selecionar" and isinstance(extrato, dict) and isinstance(
+        extrato.get("linhas"), list
+    ):
+        avaliado = avaliar_conferencia_adm(
+            app_context.database,
+            data_iso,
+            extrato,
+            modo=modo,
+            selecionadas=data.get("selecionadas") or [],
+        )
+        return registrar_conferencia_adm(app_context.database, avaliado)
+
     login, senha, debug, otimizar = _cloudfy_config()
     if not login or not senha:
         raise HTTPException(
@@ -942,8 +964,21 @@ async def conferencia_adm_executar(data: dict):
     if resultado.get("erro"):
         raise HTTPException(status_code=500, detail=str(resultado["erro"]))
 
+    if modo == "selecionar":
+        return {
+            "data": data_iso,
+            "modo": modo,
+            "aguardando_selecao": True,
+            "extrato_total": resultado.get("total", 0.0),
+            "extrato_total_texto": resultado.get("total_texto", ""),
+            "linhas": resultado.get("linhas", []),
+            "soma_linhas": resultado.get("soma_linhas", 0.0),
+            "extrato_inconsistente": resultado.get("extrato_inconsistente", False),
+            **resumo_caixa(app_context.database, data_iso),
+        }
+
     avaliado = avaliar_conferencia_adm(
-        app_context.database, data_iso, resultado
+        app_context.database, data_iso, resultado, modo=modo
     )
     return registrar_conferencia_adm(app_context.database, avaliado)
 

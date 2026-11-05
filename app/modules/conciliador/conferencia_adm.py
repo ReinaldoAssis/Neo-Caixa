@@ -57,11 +57,25 @@ def moedas_caixa(doc: dict[str, Any]) -> float:
 
 
 def dinheiro_especie_caixa(doc: dict[str, Any]) -> float:
-    """Dinheiro em especie do caixa: cedulas, sem moedas.
+    """Dinheiro em especie do caixa: cedulas contadas, sem moedas.
 
-    A conferencia ADM compara o extrato com o dinheiro em especie; moedas
-    ficam de fora do calculo.
+    A conferencia ADM compara o extrato com o dinheiro em especie. O valor
+    vem das contagens (cedulas); moedas e notas de despesa (`dinheiro_ajuste`)
+    ficam de fora.
     """
+    contagens = doc.get("contagens_dinheiro") or []
+    if contagens:
+        moedas = round(
+            sum(
+                parse_money(c.get("moedas", 0))
+                for c in contagens
+                if c.get("label") == "Geral"
+            ),
+            2,
+        )
+        return round(total_contagens_dinheiro(contagens) - moedas, 2)
+    if doc.get("dinheiro_notas") is not None:
+        return _to_float(doc.get("dinheiro_notas"))
     return round(dinheiro_real_caixa(doc) - moedas_caixa(doc), 2)
 
 
@@ -80,23 +94,64 @@ def caixas_do_dia(database, data_iso: str) -> list[dict[str, Any]]:
     return out
 
 
+def resumo_caixa(database, data_iso: str) -> dict[str, Any]:
+    caixas = caixas_do_dia(database, data_iso)
+    return {
+        "caixa_total": round(
+            sum(dinheiro_especie_caixa(c) for c in caixas), 2
+        ),
+        "caixa_moedas": round(sum(moedas_caixa(c) for c in caixas), 2),
+        "caixa_qtd": len(caixas),
+        "caixa_ids": [
+            str(c.get("doc_id") or c.get("id") or "") for c in caixas
+        ],
+    }
+
+
+def _indices_selecionados(linhas: list, selecionadas: list | None) -> list[int]:
+    indices: list[int] = []
+    for raw in selecionadas or []:
+        try:
+            indice = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= indice < len(linhas) and indice not in indices:
+            indices.append(indice)
+    return indices
+
+
 def avaliar(
     database,
     data_iso: str,
     extrato: dict[str, Any],
+    modo: str = "completo",
+    selecionadas: list | None = None,
 ) -> dict[str, Any]:
-    caixas = caixas_do_dia(database, data_iso)
-    caixa_total = round(sum(dinheiro_especie_caixa(c) for c in caixas), 2)
-    caixa_moedas = round(sum(moedas_caixa(c) for c in caixas), 2)
+    resumo = resumo_caixa(database, data_iso)
+    caixa_total = resumo["caixa_total"]
+    caixa_moedas = resumo["caixa_moedas"]
     extrato_total = _to_float(extrato.get("total"))
     linhas = extrato.get("linhas") or []
     soma_linhas = round(sum(_to_float(item.get("valor")) for item in linhas), 2)
+
+    modo = str(modo or "completo")
+    if modo not in ("completo", "selecionar"):
+        modo = "completo"
+    if modo == "selecionar":
+        indices = _indices_selecionados(linhas, selecionadas)
+        total_comparado = round(
+            sum(_to_float(linhas[i].get("valor")) for i in indices), 2
+        )
+    else:
+        indices = list(range(len(linhas)))
+        total_comparado = extrato_total
+
     diferenca = (
-        round(extrato_total - caixa_total, 2) if caixas else None
+        round(total_comparado - caixa_total, 2) if resumo["caixa_qtd"] else None
     )
     inconsistencias = abs(soma_linhas - extrato_total) > 0.005
 
-    if not caixas:
+    if not resumo["caixa_qtd"]:
         status = STATUS_SEM_CAIXA
     elif abs(diferenca or 0) <= 0.005:
         status = STATUS_BATE
@@ -106,17 +161,18 @@ def avaliar(
     return {
         "data": data_iso,
         "executado_em": _now(),
+        "modo": modo,
+        "selecionadas": indices,
         "extrato_total": extrato_total,
         "extrato_total_texto": str(extrato.get("total_texto") or ""),
         "linhas": linhas,
         "soma_linhas": soma_linhas,
         "extrato_inconsistente": inconsistencias,
+        "total_comparado": total_comparado,
         "caixa_total": caixa_total,
         "caixa_moedas": caixa_moedas,
-        "caixa_qtd": len(caixas),
-        "caixa_ids": [
-            str(c.get("doc_id") or c.get("id") or "") for c in caixas
-        ],
+        "caixa_qtd": resumo["caixa_qtd"],
+        "caixa_ids": resumo["caixa_ids"],
         "diferenca": diferenca,
         "status": status,
     }

@@ -67,3 +67,39 @@ histórico, `bate` com caixa 1.289 e `sem_caixa` com diferenca nula.
 - `conferencia_adm.moedas_caixa(doc)`: usa `dinheiro_moedas`; fallback soma
   `moedas` das contagens `Geral`.
 - Resultado e histórico ganharam `caixa_moedas`.
+
+## Ajuste 2026-11-05 — espécie contada + modos de comparação
+
+### Dinheiro do caixa
+
+- `dinheiro_especie_caixa` passou a usar **as contagens** (`total - moedas` das
+  contagens `Geral`), e não `dinheiro_real`.
+- Motivo: `dinheiro_real = contagens + dinheiro_ajuste` (notas de despesa).
+  A conferência mostrava R$ 1.315 quando o caixa fechado tinha R$ 1.043; a
+  diferença era o ajuste das notas de despesa. Agora só entra o dinheiro em
+  espécie contado.
+- Fallback para documentos antigos sem contagens: `dinheiro_notas`, depois
+  `dinheiro_real - moedas`.
+
+### Dois modos (toggle)
+
+1. **Extrato completo** (padrão): comportamento anterior; compara o `VL_TOTAL`
+   do extrato CAIXA ADM com o caixa em espécie.
+2. **Selecionar itens**: lê o extrato e devolve as linhas sem gravar histórico.
+   O usuário marca/desmarca itens; `Comparar selecionados` envia as linhas e os
+   índices escolhidos, e a comparação usa a soma dos itens marcados.
+
+API:
+
+- `POST /conferencia-adm` `{data, modo:"completo"}` → lê Cloudfy, avalia e
+  registra.
+- `POST /conferencia-adm` `{data, modo:"selecionar"}` → lê Cloudfy e retorna
+  `aguardando_selecao: true` + `linhas` + resumo do caixa (não registra).
+- `POST /conferencia-adm` `{data, modo:"selecionar", extrato, selecionadas}`
+  → avalia sem abrir o Cloudfy e registra.
+
+Resultado/histórico:
+
+- Campos novos: `modo`, `selecionadas`, `total_comparado`.
+- `diferenca = total_comparado - caixa_total`.
+- Histórico mostra "N itens" e, ao expandir, marca os itens usados.
